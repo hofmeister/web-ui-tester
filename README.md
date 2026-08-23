@@ -92,7 +92,29 @@ run_task(sessionId, "Log in as demo@example.com / hunter2 and check the
                      dashboard loads without errors")
 ```
 
-It gets the same operations as the MCP tools, runs a bounded loop (20 steps by default), and returns what it did, what it found, the steps it took, and token usage. The session is left wherever the agent finished, so you can inspect the result yourself afterwards.
+**Reporting is the point.** It returns a structured verdict, not just prose:
+
+```
+status: success
+model: google:gemini-flash-lite-latest
+
+Logged in and opened the dashboard. The revenue widget rendered empty.
+
+findings (3):
+  [error] Request failed: GET 500 [observed by the harness]
+      where: https://app.example.com/api/revenue
+      evidence: HTTP 500
+  [error] Console exception on the page [observed by the harness]
+      where: app.js:214:9
+      evidence: TypeError: Cannot read properties of undefined (reading 'total')
+  [warning] The revenue widget shows no empty state, just blank space
+      where: #revenue-card
+      evidence: card is present but contains no text
+```
+
+Findings come from two places, and the distinction matters. The agent calls `report_finding` as it goes — so a run that hits its step limit still returns everything it found up to that point. Separately, the harness records every console error, failed request, and dialog during the run and reports those **whether or not the agent mentions them**, marked `[observed by the harness]`. A model that misses a 500 or forgets to mention an exception can't hide it.
+
+The same report is returned as `structuredContent` against a declared output schema, so a calling AI can branch on `findings[].severity` rather than parse text. A task can succeed and still have findings; `success` reflects whether the task was accomplished, not whether the page was clean.
 
 This is the one part that needs an API key. It defaults to Gemini Flash Lite for latency; Anthropic works too:
 

@@ -21,12 +21,17 @@ How to work:
 - When something looks broken, check console and network before concluding. They usually name the real failure.
 - Verify before you report. Read the resulting page rather than assuming an action worked.
 
-Finish by calling done exactly once, with success set honestly and a summary of what you did and observed. Never invent page content you did not read.`;
+Reporting is the point of the run:
+- Call report_finding the moment you notice anything wrong or surprising — do not save it for the end. A run that stops early keeps everything already reported.
+- Quote what you actually saw in the evidence field: the error text, the wrong value, the status code. Never invent page content you did not read.
+- A task can succeed and still have findings, and it can fail with none. Set success by whether you accomplished the task, not by whether you found problems.
+
+Finish by calling done exactly once, with success set honestly and a summary of what you did.`;
 
 export interface RunTaskResult {
   success: boolean | 'unknown';
   summary: string;
-  findings: string[];
+  findings: Finding[];
   steps: { tool: string; args: string; result: string }[];
   finalUrl: string;
   finalTitle: string;
@@ -65,7 +70,16 @@ function resolveModel(spec: string): { model: LanguageModel; label: string } {
  * never has to carry a sessionId. Schemas stay flat — small fast models handle
  * unions and nesting poorly.
  */
-function buildTools(session: Session) {
+export interface Finding {
+  severity: 'error' | 'warning' | 'info';
+  what: string;
+  where?: string;
+  evidence?: string;
+  /** "agent" when the model reported it, "observed" when the harness saw it. */
+  source: 'agent' | 'observed';
+}
+
+function buildTools(session: Session, findings: Omit<Finding, 'source'>[]) {
   // Every step counts as use: the idle reaper only sees SessionManager.get() at
   // MCP call entry, so a long run would otherwise be reaped mid-flight.
   // clipHard, not clip: the agent's tools take no offset, so a continuation
@@ -210,16 +224,43 @@ function buildTools(session: Session) {
       execute: async (a) => clipped(await ops.inspectElement(session, asTarget(a))),
     }),
 
+    report_finding: tool({
+      description:
+        'Record something worth reporting the moment you notice it — a broken control, a wrong ' +
+        'value, an error, anything unexpected. Call it as often as you need; findings are kept ' +
+        'even if you later run out of steps. Do not wait until the end.',
+      inputSchema: z.object({
+        severity: z
+          .enum(['error', 'warning', 'info'])
+          .describe('error: broken or wrong. warning: suspect. info: worth knowing.'),
+        what: z.string().describe('What is wrong, specifically.'),
+        where: z
+          .string()
+          .optional()
+          .describe('Where you saw it: element, section, or URL.'),
+        evidence: z
+          .string()
+          .optional()
+          .describe('What you actually observed — the message, value, or status you read.'),
+      }),
+      execute: async (input) => {
+        session.touch();
+        findings.push(input);
+        return `recorded ${input.severity}: ${input.what}`;
+      },
+    }),
+
     done: tool({
       description:
-        'Call once when the task is complete or impossible. This ends the run.',
+        'Call once when the task is complete or impossible. This ends the run. Report anything ' +
+        'notable with report_finding before calling this.',
       inputSchema: z.object({
         success: z.boolean().describe('Did you accomplish the task?'),
         summary: z.string().describe('What you did and what you observed.'),
         findings: z
           .array(z.string())
           .optional()
-          .describe('Notable issues: errors, broken behaviour, unexpected state.'),
+          .describe('Any issues not already sent to report_finding.'),
       }),
       execute: async (input) => {
         session.touch();
@@ -251,7 +292,10 @@ export async function driveSession(
   options: { instruction: string; expectation?: string; maxSteps: number },
 ): Promise<RunTaskResult> {
   const maxSteps = options.maxSteps;
-  const tools = buildTools(session);
+  // Collected as the run goes, so a run that hits the step limit still returns
+  // everything it reported along the way.
+  const reported: Omit<Finding, 'source'>[] = [];
+  const tools = buildTools(session, reported);
 
   const marks = session.marks();
   const opening = await ops
@@ -299,19 +343,76 @@ export async function driveSession(
     | undefined;
 
   const { url, title } = await ops.pageState(session);
+  const observed = ops.diagnosticsSince(session, marks);
 
   return {
     success: done ? done.success : 'unknown',
     summary: done?.summary || result.text.trim() || '(no summary produced)',
-    findings: done?.findings ?? [],
+    findings: mergeFindings(reported, done?.findings ?? [], observed),
     steps,
     finalUrl: url,
     finalTitle: title,
-    consoleErrors: session.countConsoleErrorsSince(marks.console),
+    consoleErrors: observed.consoleErrors.length,
     totalTokens: result.totalUsage?.totalTokens,
     stoppedEarly: !done,
     model: label,
   };
+}
+
+/**
+ * Combines what the agent reported with what the harness saw. The observed side
+ * matters most: console errors and failed requests are reported whether or not
+ * the model thought to mention them, so a careless or truncated run still
+ * surfaces them. Anything the agent already described is not repeated.
+ */
+function mergeFindings(
+  reported: Omit<Finding, 'source'>[],
+  trailing: string[],
+  observed: ops.Diagnostics,
+): Finding[] {
+  const findings: Finding[] = reported.map((finding) => ({ ...finding, source: 'agent' }));
+  for (const what of trailing) {
+    findings.push({ severity: 'warning', what, source: 'agent' });
+  }
+
+  const described = (needle: string) =>
+    findings.some((finding) =>
+      `${finding.what} ${finding.evidence ?? ''}`.toLowerCase().includes(needle.toLowerCase()),
+    );
+
+  for (const entry of observed.consoleErrors) {
+    if (described(entry.text.slice(0, 60))) continue;
+    findings.push({
+      severity: 'error',
+      what: `Console ${entry.level === 'pageerror' ? 'exception' : 'error'} on the page`,
+      where: entry.location,
+      evidence: entry.text,
+      source: 'observed',
+    });
+  }
+
+  for (const entry of observed.failedRequests) {
+    if (described(entry.url)) continue;
+    findings.push({
+      severity: 'error',
+      what: `Request failed: ${entry.method} ${entry.status ?? entry.failure}`,
+      where: entry.url,
+      evidence: entry.failure ?? `HTTP ${entry.status}`,
+      source: 'observed',
+    });
+  }
+
+  for (const dialog of observed.dialogs) {
+    if (described(dialog.text)) continue;
+    findings.push({
+      severity: 'info',
+      what: `A dialog appeared and was ${dialog.how}`,
+      evidence: dialog.text,
+      source: 'observed',
+    });
+  }
+
+  return findings;
 }
 
 function digest(value: unknown, max = 120): string {
@@ -323,14 +424,33 @@ function digest(value: unknown, max = 120): string {
 
 export function formatRunResult(result: RunTaskResult): string {
   const lines = [
-    `status: ${result.success === 'unknown' ? 'unknown (agent stopped without reporting)' : result.success ? 'success' : 'failed'}`,
+    `status: ${
+      result.success === 'unknown'
+        ? 'unknown (agent stopped without reporting)'
+        : result.success
+          ? 'success'
+          : 'failed'
+    }`,
     `model: ${result.model}`,
     '',
     result.summary,
   ];
 
+  // Findings lead: they are what the caller delegated the run to discover.
   if (result.findings.length) {
-    lines.push('', 'findings:', ...result.findings.map((f) => `  - ${f}`));
+    const order = { error: 0, warning: 1, info: 2 } as const;
+    const sorted = [...result.findings].sort(
+      (a, b) => order[a.severity] - order[b.severity],
+    );
+    lines.push('', `findings (${result.findings.length}):`);
+    for (const finding of sorted) {
+      const tag = finding.source === 'observed' ? ' [observed by the harness]' : '';
+      lines.push(`  [${finding.severity}] ${finding.what}${tag}`);
+      if (finding.where) lines.push(`      where: ${finding.where}`);
+      if (finding.evidence) lines.push(`      evidence: ${finding.evidence}`);
+    }
+  } else {
+    lines.push('', 'findings: none reported, and no console errors or failed requests observed.');
   }
 
   if (result.steps.length) {
@@ -347,17 +467,14 @@ export function formatRunResult(result: RunTaskResult): string {
   if (result.stoppedEarly) {
     lines.push(
       '',
-      'The agent hit the step limit before finishing. Raise maxSteps, or split the task.',
+      'The agent hit the step limit before finishing, so the task may be incomplete. ' +
+        'Findings recorded before the limit are still included above. ' +
+        'Raise maxSteps, or split the task.',
     );
   }
 
-  lines.push(
-    '',
-    `final url: ${result.finalUrl}`,
-    `final title: ${result.finalTitle || '(untitled)'}`,
-    `console errors during run: ${result.consoleErrors}`,
-    result.totalTokens ? `tokens: ${result.totalTokens}` : '',
-  );
+  lines.push('', `final url: ${result.finalUrl}`, `final title: ${result.finalTitle || '(untitled)'}`);
+  if (result.totalTokens) lines.push(`tokens: ${result.totalTokens}`);
 
-  return lines.filter((line) => line !== undefined).join('\n');
+  return lines.join('\n');
 }

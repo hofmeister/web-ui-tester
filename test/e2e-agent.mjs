@@ -67,8 +67,8 @@ async function main() {
       arguments: {
         sessionId,
         instruction:
-          'Fill the signup form with the name "Ada Lovelace", submit it, and report the ' +
-          'confirmation message that appears.',
+          'Reload the page, fill the signup form with the name "Ada Lovelace", submit it, and ' +
+          'report the confirmation message that appears along with anything that looks broken.',
         expectation: 'The page shows a confirmation naming Ada Lovelace.',
         maxSteps: 12,
         ...(model ? { model } : {}),
@@ -80,6 +80,22 @@ async function main() {
     check('run_task did not error', run.isError !== true, body);
     check('agent reported success', /^status: success/m.test(body), body.slice(0, 200));
     check('agent read the confirmation', /Ada Lovelace/.test(body), body.slice(0, 400));
+
+    // The fixture seeds a console error and a 404 on load; the harness must
+    // report both whether or not the model thought to mention them.
+    const structured = run.structuredContent;
+    check('a structured report came back', Boolean(structured?.findings), JSON.stringify(structured)?.slice(0, 200));
+    const observed = (structured?.findings ?? []).filter((f) => f.source === 'observed');
+    check(
+      'harness-observed findings are included',
+      observed.length > 0,
+      JSON.stringify(structured?.findings),
+    );
+    check(
+      'every finding carries a severity',
+      (structured?.findings ?? []).every((f) => ['error', 'warning', 'info'].includes(f.severity)),
+      JSON.stringify(structured?.findings),
+    );
 
     // The agent's work must be visible in the live session afterwards.
     const value = textOf(

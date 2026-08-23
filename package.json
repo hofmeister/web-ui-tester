@@ -15,7 +15,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup src/index.ts src/agent.ts src/server.ts src/session.ts src/config.ts --format esm --clean --target node20",
+    "build": "tsup src/index.ts src/agent.ts src/server.ts src/session.ts src/config.ts src/tools/agent.ts --format esm --clean --target node20",
     "dev": "tsup src/index.ts --format esm --target node20 --watch",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",

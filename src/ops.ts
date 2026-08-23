@@ -179,6 +179,44 @@ export interface ActionResult {
   text: string;
 }
 
+export interface Diagnostics {
+  consoleErrors: { level: string; text: string; location?: string }[];
+  failedRequests: { method: string; url: string; status?: number; failure?: string }[];
+  dialogs: { text: string; how: string }[];
+}
+
+/**
+ * What the harness itself observed during a stretch of work. The embedded agent
+ * reports what it noticed; this reports what actually happened, so a run that
+ * forgets to mention a 500 or ran out of steps still surfaces it.
+ */
+export function diagnosticsSince(
+  session: Session,
+  marks: { console: number; network: number },
+): Diagnostics {
+  return {
+    consoleErrors: session.console
+      .filter(
+        (entry) =>
+          entry.seq > marks.console &&
+          (entry.level === 'error' || entry.level === 'pageerror'),
+      )
+      .map((entry) => ({ level: entry.level, text: entry.text, location: entry.location })),
+    failedRequests: session
+      .requestsSince(marks.network)
+      .filter((entry) => entry.failure || (entry.status ?? 0) >= 400)
+      .map((entry) => ({
+        method: entry.method,
+        url: entry.url,
+        status: entry.status,
+        failure: entry.failure,
+      })),
+    dialogs: session.dialogLog
+      .filter((entry) => entry.seq > marks.console)
+      .map((entry) => ({ text: entry.text, how: entry.how })),
+  };
+}
+
 async function withActivity(
   session: Session,
   fn: () => Promise<string>,

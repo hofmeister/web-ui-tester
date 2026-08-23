@@ -68,6 +68,8 @@ export function register(
     title: string;
     description: string;
     inputSchema: Record<string, z.ZodType>;
+    /** Declaring one makes the result's structuredContent machine-readable. */
+    outputSchema?: Record<string, z.ZodType>;
     readOnly?: boolean;
   },
   handler: (args: Record<string, never>) => Promise<CallToolResult>,
@@ -78,6 +80,7 @@ export function register(
       title: spec.title,
       description: spec.description,
       inputSchema: spec.inputSchema,
+      ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
       annotations: {
         readOnlyHint: spec.readOnly ?? false,
         openWorldHint: true,
