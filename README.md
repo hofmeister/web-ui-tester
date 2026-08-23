@@ -69,7 +69,7 @@ Element-addressing tools also accept `css`, or `role` + `name`, when you already
 
 ## Tools
 
-**Session** — `browser_start` (options: `userAgent`, `viewport`, `headless`, `baseUrl`, `url`, `model`), `browser_list`, `browser_close`.
+**Session** — `browser_start` (options: `userAgent`, `viewportWidth`, `viewportHeight`, `headless`, `baseUrl`, `url`, `model`), `browser_list`, `browser_close`.
 
 **Interaction** — `browser_navigate`, `browser_click`, `browser_type`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_scroll`, `browser_wait_for`, `browser_go_back`, `browser_handle_dialog`.
 

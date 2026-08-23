@@ -39,7 +39,8 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
           .describe('Only entries since the previous call (default true).'),
         clear: z.boolean().optional().describe('Empty the buffer after reading.'),
       },
-      readOnly: true,
+      // Reading advances the sinceLastCall cursor, and `clear` empties the buffer.
+      readOnly: false,
     },
     async (args) => {
       const a = args as unknown as {

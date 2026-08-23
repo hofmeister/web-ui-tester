@@ -28,8 +28,14 @@ export async function startFixtureServer() {
     }
 
     const name = url.pathname === '/' ? '/app.html' : url.pathname;
+    const target = join(fixtures, name);
+    if (!target.startsWith(fixtures)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('forbidden');
+      return;
+    }
     try {
-      const body = await readFile(join(fixtures, name));
+      const body = await readFile(target);
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(body);
     } catch {

@@ -111,15 +111,15 @@ export async function miniSnapshot(session: Session): Promise<string> {
 }
 
 /** Console errors that appeared while an action ran, so failures are noticed. */
-function activitySince(session: Session, consoleMark: number, networkMark: number): string {
-  const errors = session.countConsoleErrorsSince(consoleMark);
-  const requests = session.network.length - networkMark;
-  const failed = session.network
-    .slice(networkMark)
-    .filter((entry) => entry.failure || (entry.status ?? 0) >= 400).length;
+function activitySince(session: Session, marks: { console: number; network: number }): string {
+  const errors = session.countConsoleErrorsSince(marks.console);
+  const since = session.requestsSince(marks.network);
+  const failed = since.filter((entry) => entry.failure || (entry.status ?? 0) >= 400).length;
   const parts: string[] = [];
   if (errors) parts.push(`${errors} new console error(s) — see browser_console`);
-  if (requests) parts.push(`${requests} request(s)${failed ? `, ${failed} failed/4xx/5xx` : ''}`);
+  if (since.length) {
+    parts.push(`${since.length} request(s)${failed ? `, ${failed} failed/4xx/5xx` : ''}`);
+  }
   return parts.length ? `\nactivity: ${parts.join('; ')}` : '';
 }
 
@@ -131,8 +131,7 @@ async function withActivity(
   session: Session,
   fn: () => Promise<string>,
 ): Promise<string> {
-  const consoleMark = session.console.length;
-  const networkMark = session.network.length;
+  const marks = session.marks();
   const urlBefore = session.page.url();
   const summary = await fn();
   // Let same-tick navigations and XHRs register before reporting.
@@ -141,10 +140,7 @@ async function withActivity(
   const navigated = urlAfter !== urlBefore ? `\nnavigated to: ${urlAfter}` : '';
   const notice = session.takeNotice();
   return (
-    summary +
-    navigated +
-    activitySince(session, consoleMark, networkMark) +
-    (notice ? `\nnote: ${notice}` : '')
+    summary + navigated + activitySince(session, marks) + (notice ? `\nnote: ${notice}` : '')
   );
 }
 
@@ -180,7 +176,18 @@ export async function startSession(
   );
 
   if (options.url) {
-    lines.push('', await navigate(session, options.url));
+    // A failed opening navigation must not discard the sessionId — the session
+    // is already registered, and losing its id would strand the browser context
+    // until the idle reaper runs.
+    try {
+      lines.push('', await navigate(session, options.url));
+    } catch (error) {
+      lines.push(
+        '',
+        `The session is open, but navigating to ${options.url} failed: ${(error as Error).message}`,
+        'Retry with browser_navigate, or close the session with browser_close.',
+      );
+    }
   }
   return { session, text: lines.join('\n') };
 }
@@ -205,16 +212,24 @@ export async function navigate(
   waitUntil: 'load' | 'domcontentloaded' | 'networkidle' = 'load',
 ): Promise<string> {
   const resolved = session.resolveUrl(url);
-  const consoleMark = session.console.length;
-  const networkMark = session.network.length;
-  const response = await act(undefined, () =>
-    session.page.goto(resolved, { waitUntil, timeout: 30_000 }),
-  );
+  const marks = session.marks();
+  const response = await act(undefined, async () => {
+    try {
+      return await session.page.goto(resolved, { waitUntil, timeout: 30_000 });
+    } catch (error) {
+      // Navigating straight after a failed load races with Chrome committing
+      // its error page. Let that settle, then retry once.
+      if (!/interrupted by another navigation/i.test((error as Error).message)) throw error;
+      await session.page.waitForLoadState('load', { timeout: 10_000 }).catch(() => {});
+      if (session.page.url() === resolved) return null;
+      return await session.page.goto(resolved, { waitUntil, timeout: 30_000 });
+    }
+  });
   const status = response ? `${response.status()} ${response.statusText()}` : 'no response';
   return [
     `navigated: ${resolved} (${status})`,
     await stateLine(session),
-    activitySince(session, consoleMark, networkMark).trim(),
+    activitySince(session, marks).trim(),
     '',
     'snapshot:',
     await miniSnapshot(session),
@@ -495,19 +510,22 @@ export function consoleLog(
   },
 ): string {
   const level = options.level ?? 'all';
-  const from = options.sinceLastCall ? session.consoleReadIndex : 0;
-  let entries = session.console.slice(from);
-  session.consoleReadIndex = session.console.length;
+  const cursor = session.consoleReadSeq.get(level) ?? 0;
+  let entries = session.console.filter((entry) => matchesLevel(entry.level, level));
+  if (options.sinceLastCall) {
+    entries = entries.filter((entry) => entry.seq > cursor);
+  }
 
-  if (level === 'error') {
-    entries = entries.filter((e) => e.level === 'error' || e.level === 'pageerror');
-  } else if (level !== 'all') {
-    entries = entries.filter((e) => e.level === level);
+  // Only a `sinceLastCall` read consumes its cursor, and only up to what it
+  // actually returned.
+  const newest = entries[entries.length - 1];
+  if (options.sinceLastCall && newest) {
+    session.consoleReadSeq.set(level, newest.seq);
   }
 
   if (options.clear) {
     session.console.length = 0;
-    session.consoleReadIndex = 0;
+    session.consoleReadSeq.clear();
   }
 
   if (!entries.length) {
@@ -524,6 +542,13 @@ export function consoleLog(
       `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
   );
   return (omitted ? `…${omitted} older entries omitted\n` : '') + lines.join('\n');
+}
+
+function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
+  if (filter === 'all') return true;
+  // Uncaught page errors belong with console errors — they are the same signal.
+  if (filter === 'error') return entryLevel === 'error' || entryLevel === 'pageerror';
+  return entryLevel === filter;
 }
 
 export function networkLog(
@@ -695,13 +720,27 @@ function compile(
   const looksLikeFunction =
     /^(async\s+)?(function\b|\()/.test(trimmed) ||
     /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(trimmed);
-  const body = looksLikeFunction
-    ? `return (${trimmed})(${scoped ? 'el' : ''});`
-    : `return (${trimmed});`;
+  const build = (body: string) =>
+    scoped ? new AsyncFunction('el', body) : new AsyncFunction(body);
+
+  if (looksLikeFunction) {
+    try {
+      return build(`return (${trimmed})(${scoped ? 'el' : ''});`);
+    } catch (error) {
+      throw new OpError(`Could not parse the function: ${(error as Error).message}`);
+    }
+  }
+
   try {
-    return scoped ? new AsyncFunction('el', body) : new AsyncFunction(body);
-  } catch (error) {
-    throw new OpError(`Could not parse the expression: ${(error as Error).message}`);
+    return build(`return (${trimmed});`);
+  } catch {
+    // Not a single expression — treat it as a statement body, so callers can
+    // write "const x = f(); return x" or several statements in a row.
+    try {
+      return build(trimmed);
+    } catch (error) {
+      throw new OpError(`Could not parse the expression: ${(error as Error).message}`);
+    }
   }
 }
 

@@ -204,6 +204,24 @@ async function stdioLeg(fixture) {
   });
   check('evaluate binds el for a target', scopedEval.text.includes('Jane Tester'), scopedEval.text);
 
+  const multi = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'const inputs = document.querySelectorAll("input"); return inputs.length * 2;',
+  });
+  check('evaluate accepts a multi-statement body', multi.text.trim() === '6', multi.text);
+
+  const awaited = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'await Promise.resolve(document.title)',
+  });
+  check('evaluate supports await', awaited.text.includes('Fixture'), awaited.text);
+
+  const badExpr = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'this is not javascript(((',
+  });
+  check('evaluate reports a syntax error clearly', badExpr.isError, badExpr.text);
+
   const inspected = await call(client, 'browser_inspect_element', { sessionId, css: '#secret' });
   check(
     'inspect_element reports display:none',
@@ -229,11 +247,80 @@ async function stdioLeg(fixture) {
   const badSession = await call(client, 'browser_snapshot', { sessionId: 'nope' });
   check('unknown session is a clean error', badSession.isError, badSession.text);
 
+  await regressionChecks(client, fixture, sessionId);
+
   await call(client, 'browser_close', { sessionId });
   const listed = await call(client, 'browser_list', {});
   check('closed session is gone', listed.text.includes('No open sessions'), listed.text);
 
   await client.close();
+}
+
+/** Regressions for defects found in review; each one was reproducible. */
+async function regressionChecks(client, fixture, sessionId) {
+  section('regressions');
+
+  // A closed popup used to leave the session pointing at a dead page.
+  await call(client, 'browser_navigate', { sessionId, url: '/app.html' });
+  await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'const w = window.open("/second.html"); w.close(); "opened"',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const afterPopup = await call(client, 'browser_snapshot', { sessionId });
+  check(
+    'session survives a popup that closes itself',
+    !afterPopup.isError && /\[ref=[a-z0-9]+\]/.test(afterPopup.text),
+    afterPopup.text.slice(0, 300),
+  );
+
+  // A level filter used to consume unread entries of other levels.
+  await call(client, 'browser_console', { sessionId, sinceLastCall: true });
+  await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'console.warn("regression-warning"); console.error("regression-error"); 1',
+  });
+  // Console events arrive over CDP a beat after evaluate resolves.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const errorsOnly = await call(client, 'browser_console', {
+    sessionId,
+    level: 'error',
+    sinceLastCall: true,
+  });
+  check(
+    'level-filtered read returns the error',
+    errorsOnly.text.includes('regression-error'),
+    errorsOnly.text,
+  );
+  const warningsAfter = await call(client, 'browser_console', {
+    sessionId,
+    level: 'warning',
+    sinceLastCall: true,
+  });
+  check(
+    'level filter does not consume other levels',
+    warningsAfter.text.includes('regression-warning'),
+    warningsAfter.text,
+  );
+
+  // browser_start used to strand the context when the first navigation failed.
+  const badStart = await call(client, 'browser_start', {
+    url: 'http://127.0.0.1:1/nothing-here',
+  });
+  const strandedId = /sessionId: (\S+)/.exec(badStart.text)?.[1];
+  check(
+    'failed opening navigation still yields a sessionId',
+    Boolean(strandedId) && /failed/i.test(badStart.text),
+    badStart.text,
+  );
+  if (strandedId) {
+    const usable = await call(client, 'browser_navigate', {
+      sessionId: strandedId,
+      url: `${fixture.origin}/app.html`,
+    });
+    check('that session is still usable', !usable.isError, usable.text.slice(0, 200));
+    await call(client, 'browser_close', { sessionId: strandedId });
+  }
 }
 
 async function httpLeg(fixture) {

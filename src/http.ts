@@ -23,6 +23,7 @@ export async function startHttpServer(
   options: { port: number; host: string },
 ): Promise<HttpServerHandle> {
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const loopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(options.host);
 
   const http = createServer((req, res) => {
     void handle(req, res).catch((error: Error) => {
@@ -81,8 +82,20 @@ export async function startHttpServer(
       onsessionclosed: (id) => {
         transports.delete(id);
       },
-      allowedHosts: [`${options.host}:${options.port}`, `localhost:${options.port}`, `127.0.0.1:${options.port}`],
-      enableDnsRebindingProtection: true,
+      // Only meaningful for a loopback bind, where we know every legitimate
+      // Host header. On a public bind the reachable hostnames are unknowable,
+      // and an allowlist built from the bind address would reject real clients.
+      ...(loopbackOnly
+        ? {
+            allowedHosts: [
+              `${options.host}:${options.port}`,
+              `localhost:${options.port}`,
+              `127.0.0.1:${options.port}`,
+              `[::1]:${options.port}`,
+            ],
+            enableDnsRebindingProtection: true,
+          }
+        : {}),
     });
     transport.onclose = () => {
       if (transport.sessionId) transports.delete(transport.sessionId);
@@ -104,7 +117,12 @@ export async function startHttpServer(
 
   process.stderr.write(
     `[web-ui-tester] listening on http://${options.host}:${options.port}${MCP_PATH}\n` +
-      '[web-ui-tester] browser sessions persist across client reconnects in this mode\n',
+      '[web-ui-tester] browser sessions persist across client reconnects in this mode\n' +
+      (loopbackOnly
+        ? ''
+        : `[web-ui-tester] warning: bound to ${options.host}, so this server is reachable from ` +
+          'the network with no authentication and DNS-rebinding protection off. It can drive a ' +
+          'browser and run JavaScript — put it behind a proxy or firewall.\n'),
   );
 
   return {

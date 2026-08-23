@@ -10,6 +10,8 @@ const BODY_CACHE_MAX_BYTES = 256 * 1024;
 const DIALOG_AUTO_DISMISS_MS = 10_000;
 
 export interface ConsoleEntry {
+  /** Monotonic, so cursors and marks survive ring-buffer eviction. */
+  seq: number;
   ts: number;
   level: string;
   text: string;
@@ -63,12 +65,21 @@ export class Session {
 
   readonly console: ConsoleEntry[] = [];
   readonly network: NetworkEntry[] = [];
-  /** Index into `console` marking what a previous `sinceLastCall` read consumed. */
-  consoleReadIndex = 0;
+  /**
+   * Newest entry each `sinceLastCall` read has consumed, tracked per level
+   * filter: one shared cursor would let an error read swallow an older unread
+   * warning, since the filters see different subsets of the same buffer.
+   */
+  readonly consoleReadSeq = new Map<string, number>();
   pendingDialog?: PendingDialog;
   /** Set when a popup replaces the active page, so the next tool result can say so. */
   pendingNotice?: string;
 
+  /**
+   * Monotonic counters, never reset by ring-buffer eviction. Array indices
+   * would silently under-report activity once a buffer wraps.
+   */
+  private consoleSeq = 0;
   private nextRequestId = 1;
   private readonly requestStarts = new WeakMap<Request, number>();
 
@@ -89,7 +100,22 @@ export class Session {
   }
 
   get page(): Page {
-    return this.activePage;
+    const current = this.activePage;
+    if (!current.isClosed()) return current;
+    // The active page closed (a popup dismissed itself, or script closed it).
+    // Fall back to another live page so the session stays usable.
+    const alive = this.context.pages().find((page) => !page.isClosed());
+    if (!alive) {
+      throw new Error(
+        `Session ${this.id} has no open page left. Call browser_navigate to open one, ` +
+          'or browser_close and start a new session.',
+      );
+    }
+    if (alive !== current) {
+      this.activePage = alive;
+      this.pendingNotice = `The previous page closed; now active: ${alive.url()}`;
+    }
+    return alive;
   }
 
   touch(): void {
@@ -107,10 +133,20 @@ export class Session {
     return notice;
   }
 
-  countConsoleErrorsSince(index: number): number {
-    return this.console
-      .slice(index)
-      .filter((entry) => entry.level === 'error' || entry.level === 'pageerror').length;
+  /** Marks for measuring what an action caused; survives buffer eviction. */
+  marks(): { console: number; network: number } {
+    return { console: this.consoleSeq, network: this.nextRequestId };
+  }
+
+  countConsoleErrorsSince(seq: number): number {
+    return this.console.filter(
+      (entry) =>
+        entry.seq > seq && (entry.level === 'error' || entry.level === 'pageerror'),
+    ).length;
+  }
+
+  requestsSince(seq: number): NetworkEntry[] {
+    return this.network.filter((entry) => entry.id >= seq);
   }
 
   findRequest(id: number): NetworkEntry | undefined {
@@ -127,12 +163,10 @@ export class Session {
     return url;
   }
 
-  private pushConsole(entry: ConsoleEntry): void {
-    this.console.push(entry);
+  private pushConsole(entry: Omit<ConsoleEntry, 'seq'>): void {
+    this.console.push({ ...entry, seq: ++this.consoleSeq });
     if (this.console.length > CONSOLE_BUFFER_MAX) {
-      const dropped = this.console.length - CONSOLE_BUFFER_MAX;
-      this.console.splice(0, dropped);
-      this.consoleReadIndex = Math.max(0, this.consoleReadIndex - dropped);
+      this.console.splice(0, this.console.length - CONSOLE_BUFFER_MAX);
     }
   }
 
@@ -212,6 +246,14 @@ export class Session {
         level: 'dialog',
         text: `${dialog.type()}: ${dialog.message()}`,
       });
+      // A dialog blocks the page's JS until it is answered, so a previous one
+      // must be dismissed rather than dropped — otherwise the page hangs and
+      // the dialog is no longer reachable through browser_handle_dialog.
+      const superseded = this.pendingDialog;
+      if (superseded) {
+        clearTimeout(superseded.timer);
+        superseded.dialog.dismiss().catch(() => {});
+      }
       const timer = setTimeout(() => {
         if (this.pendingDialog?.dialog === dialog) {
           this.pendingDialog = undefined;
@@ -271,14 +313,21 @@ export class SessionManager {
   constructor(private readonly config: Config) {}
 
   private browser(headless: boolean): Promise<Browser> {
-    let existing = this.browsers.get(headless);
-    if (!existing) {
-      existing = launchBrowser(headless, this.config.executablePath);
-      this.browsers.set(headless, existing);
-      // A crashed launch must not poison the slot for later attempts.
-      existing.catch(() => this.browsers.delete(headless));
-    }
-    return existing;
+    const existing = this.browsers.get(headless);
+    if (existing) return existing;
+
+    const pending = launchBrowser(headless, this.config.executablePath);
+    this.browsers.set(headless, pending);
+    // Neither a failed launch nor a later crash may poison the slot: without
+    // this, one Chromium crash breaks every subsequent browser_start.
+    const forget = () => {
+      if (this.browsers.get(headless) === pending) this.browsers.delete(headless);
+    };
+    pending.then(
+      (browser) => browser.on('disconnected', forget),
+      forget,
+    );
+    return pending;
   }
 
   async create(options: SessionOptions): Promise<Session> {

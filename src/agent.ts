@@ -246,7 +246,7 @@ export async function driveSession(
   const maxSteps = options.maxSteps;
   const tools = buildTools(session);
 
-  const consoleMark = session.console.length;
+  const marks = session.marks();
   const opening = await ops
     .snapshot(session, { maxChars: AGENT_SNAPSHOT_CHARS })
     .catch((error: Error) => `(snapshot unavailable: ${error.message})`);
@@ -269,12 +269,19 @@ export async function driveSession(
     stopWhen: [stepCountIs(maxSteps), hasToolCall('done')],
   });
 
+  // Pair by toolCallId, not position: an erroring call in a parallel batch
+  // produces no result and would shift every later result onto the wrong call.
   const steps = result.steps.flatMap((step) =>
-    step.toolCalls.map((call, i) => ({
-      tool: call.toolName,
-      args: digest(call.input),
-      result: digest(step.toolResults[i]?.output),
-    })),
+    step.toolCalls.map((call) => {
+      const match = step.toolResults.find(
+        (toolResult) => toolResult.toolCallId === call.toolCallId,
+      );
+      return {
+        tool: call.toolName,
+        args: digest(call.input),
+        result: match ? digest(match.output) : '(no result)',
+      };
+    }),
   );
 
   const doneCall = result.steps
@@ -288,12 +295,12 @@ export async function driveSession(
 
   return {
     success: done ? done.success : 'unknown',
-    summary: done?.summary ?? result.text.trim() ?? '(no summary produced)',
+    summary: done?.summary || result.text.trim() || '(no summary produced)',
     findings: done?.findings ?? [],
     steps,
     finalUrl: url,
     finalTitle: title,
-    consoleErrors: session.countConsoleErrorsSince(consoleMark),
+    consoleErrors: session.countConsoleErrorsSince(marks.console),
     totalTokens: result.totalUsage?.totalTokens,
     stoppedEarly: !done,
     model: label,
