@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 
@@ -8,10 +9,30 @@ import { chromium, type Browser } from 'playwright';
  * the default lookup fails even though a perfectly usable binary is on disk.
  * This finds it.
  */
-function findInstalledChromium(headless: boolean): string | undefined {
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
-  if (!root || root === '0') return undefined;
+function browserRoots(): string[] {
+  const configured = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (configured === '0') return [];
+  if (configured) return [configured];
 
+  // Playwright's default per-user cache, which is where an install lands when
+  // PLAYWRIGHT_BROWSERS_PATH is unset — the most common case of all.
+  const home = homedir();
+  if (process.platform === 'darwin') return [join(home, 'Library/Caches/ms-playwright')];
+  if (process.platform === 'win32') {
+    return [join(process.env.LOCALAPPDATA ?? join(home, 'AppData/Local'), 'ms-playwright')];
+  }
+  return [join(process.env.XDG_CACHE_HOME ?? join(home, '.cache'), 'ms-playwright')];
+}
+
+function findInstalledChromium(headless: boolean): string | undefined {
+  for (const root of browserRoots()) {
+    const found = findUnder(root, headless);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function findUnder(root: string, headless: boolean): string | undefined {
   let entries: string[];
   try {
     entries = readdirSync(root);

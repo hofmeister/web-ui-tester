@@ -53,14 +53,18 @@ export function clip(text: string, maxChars: number, offset = 0): ClipResult {
     return { text, truncated: false, totalChars: total };
   }
   const start = Math.min(offset, total);
-  // The note can only shrink as the slice shrinks, so measuring it against the
-  // largest possible end gives a reserve that is never too small.
-  const reserve = pagingNote(start, Math.min(start + maxChars, total), total).length;
+  // Reserve against the longest note this call could emit: every clause
+  // present, every number at its widest. Probing with a guessed end
+  // under-reserves whenever that guess lands on a shorter variant of the note.
+  const reserve = pagingNote(start, start, total).length + String(total).length;
   const room = Math.max(50, maxChars - reserve);
   const slice = text.slice(start, start + room);
   const end = start + slice.length;
   const suffix = pagingNote(start, end, total);
-  return { text: slice + suffix, truncated: suffix.length > 0, totalChars: total };
+  // The floor above can still overshoot a budget too small to hold the note at
+  // all. Nothing downstream may exceed maxChars, so enforce it here.
+  const body = (slice + suffix).slice(0, maxChars);
+  return { text: body, truncated: suffix.length > 0, totalChars: total };
 }
 
 export interface SnapshotOptions {

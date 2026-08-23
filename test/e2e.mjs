@@ -420,6 +420,39 @@ async function regressionChecks(client, fixture, sessionId) {
   });
   check('a filtered clear keeps other levels', survived.text.includes('keep-me'), survived.text);
 
+  // An endless expression used to hang the tool call forever.
+  const hang = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'new Promise(() => {})',
+  });
+  check('a non-terminating evaluate times out', hang.isError, hang.text.slice(0, 200));
+
+  // clear:true used to delete entries the same response reported as unread.
+  await call(client, 'browser_console', { sessionId, level: 'error', sinceLastCall: true });
+  await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'for (let i = 0; i < 5; i++) console.error("bulk-" + i); 1',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const firstBatch = await call(client, 'browser_console', {
+    sessionId,
+    level: 'error',
+    limit: 2,
+    clear: true,
+    sinceLastCall: true,
+  });
+  check('a limited read reports the remainder', /more unread/.test(firstBatch.text), firstBatch.text);
+  const secondBatch = await call(client, 'browser_console', {
+    sessionId,
+    level: 'error',
+    sinceLastCall: true,
+  });
+  check(
+    'clear keeps entries it reported as unread',
+    secondBatch.text.includes('bulk-'),
+    secondBatch.text,
+  );
+
   // A trailing semicolon used to break the expression form, yielding undefined.
   const semi = await call(client, 'browser_evaluate', {
     sessionId,

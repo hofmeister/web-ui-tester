@@ -66,7 +66,12 @@ function resolveModel(spec: string): { model: LanguageModel; label: string } {
  * unions and nesting poorly.
  */
 function buildTools(session: Session) {
-  const clipped = (body: string) => clip(body, AGENT_TOOL_CHARS).text;
+  // Every step counts as use: the idle reaper only sees SessionManager.get() at
+  // MCP call entry, so a long run would otherwise be reaped mid-flight.
+  const clipped = (body: string) => {
+    session.touch();
+    return clip(body, AGENT_TOOL_CHARS).text;
+  };
   const targetShape = {
     ref: z.string().optional().describe('Element ref from a snapshot, e.g. "e12".'),
     css: z.string().optional().describe('CSS selector, if you have no ref.'),
@@ -86,8 +91,10 @@ function buildTools(session: Session) {
       }),
       // ops.snapshot already budgets to maxChars; clipping again here would cut
       // off its own truncation note.
-      execute: async ({ interactiveOnly, depth }) =>
-        ops.snapshot(session, { interactiveOnly, depth, maxChars: AGENT_SNAPSHOT_CHARS }),
+      execute: async ({ interactiveOnly, depth }) => {
+        session.touch();
+        return ops.snapshot(session, { interactiveOnly, depth, maxChars: AGENT_SNAPSHOT_CHARS });
+      },
     }),
 
     navigate: tool({
@@ -212,7 +219,10 @@ function buildTools(session: Session) {
           .optional()
           .describe('Notable issues: errors, broken behaviour, unexpected state.'),
       }),
-      execute: async (input) => input,
+      execute: async (input) => {
+        session.touch();
+        return input;
+      },
     }),
   };
 }

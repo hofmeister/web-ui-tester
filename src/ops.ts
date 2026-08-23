@@ -656,7 +656,7 @@ export function consoleLog(
     session.consoleReadSeq.set(level, newest.seq);
   }
 
-  if (options.clear) clearLevel(session, level);
+  if (options.clear) clearLevel(session, level, newest?.seq ?? Infinity);
 
   const lines = shown.map(
     (entry) => `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
@@ -674,12 +674,21 @@ export function consoleLog(
  * arrives as "log", so an "info" filter that only matched "info" reported an
  * empty buffer while log lines sat in it.
  */
-/** Clears only the entries a filtered read covered, never other levels'. */
-function clearLevel(session: Session, level: 'error' | 'warning' | 'info' | 'all'): void {
-  const kept = session.console.filter((entry) => !matchesLevel(entry.level, level));
+/**
+ * Clears only entries this read covered: never another level's, and never ones
+ * the same response reported as still unread beyond its limit.
+ */
+function clearLevel(
+  session: Session,
+  level: 'error' | 'warning' | 'info' | 'all',
+  throughSeq = Infinity,
+): void {
+  const kept = session.console.filter(
+    (entry) => !matchesLevel(entry.level, level) || entry.seq > throughSeq,
+  );
   session.console.length = 0;
   session.console.push(...kept);
-  session.consoleReadSeq.delete(level);
+  if (throughSeq === Infinity) session.consoleReadSeq.delete(level);
 }
 
 function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
@@ -832,9 +841,15 @@ export async function evaluate(
   const scoped = Boolean(target && (target.ref || target.css || target.role));
   const fn = compile(expression, scoped);
   try {
+    // page.evaluate takes no timeout option, so an endless loop or a promise
+    // that never settles would hang the tool call — and an agent loop with it.
     const result = scoped
-      ? await locate(session, target!).evaluate(fn, undefined, { timeout: 10_000 })
-      : await session.page.evaluate(fn);
+      ? await locate(session, target!).evaluate(fn, undefined, { timeout: EVALUATE_TIMEOUT_MS })
+      : await withTimeout(
+          session.page.evaluate(fn),
+          EVALUATE_TIMEOUT_MS,
+          `Evaluation did not finish within ${EVALUATE_TIMEOUT_MS}ms — the expression may not terminate.`,
+        );
     return clip(serialize(result), maxChars).text;
   } catch (error) {
     if (error instanceof Error && /Timeout/i.test(error.message)) {
@@ -842,6 +857,25 @@ export async function evaluate(
     }
     throw new OpError(`Evaluation failed: ${(error as Error).message}`);
   }
+}
+
+const EVALUATE_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new OpError(message)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error as Error);
+      },
+    );
+  });
 }
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
