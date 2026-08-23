@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 
@@ -19,20 +19,33 @@ function findInstalledChromium(headless: boolean): string | undefined {
     return undefined;
   }
 
+  // Layouts differ per platform, so each candidate is probed rather than
+  // assumed — returning a path that does not exist would replace Playwright's
+  // actionable "run npx playwright install" message with a confusing one.
+  const shell = ['chrome-linux/headless_shell', 'chrome-mac/headless_shell'];
+  const full = [
+    'chrome-linux/chrome',
+    'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+    'chrome-win/chrome.exe',
+  ];
   // Prefer the headless shell for headless runs; it is smaller and faster.
   const candidates = headless
     ? [
-        { prefix: 'chromium_headless_shell-', bin: 'chrome-linux/headless_shell' },
-        { prefix: 'chromium-', bin: 'chrome-linux/chrome' },
+        { prefix: 'chromium_headless_shell-', bins: shell },
+        { prefix: 'chromium-', bins: full },
       ]
-    : [{ prefix: 'chromium-', bin: 'chrome-linux/chrome' }];
+    : [{ prefix: 'chromium-', bins: full }];
 
-  for (const { prefix, bin } of candidates) {
-    const matches = entries
+  for (const { prefix, bins } of candidates) {
+    const installs = entries
       .filter((entry) => entry.startsWith(prefix) && /\d+$/.test(entry))
       .sort((a, b) => Number(b.slice(prefix.length)) - Number(a.slice(prefix.length)));
-    const newest = matches[0];
-    if (newest) return join(root, newest, bin);
+    for (const install of installs) {
+      for (const bin of bins) {
+        const candidate = join(root, install, bin);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
   }
   return undefined;
 }

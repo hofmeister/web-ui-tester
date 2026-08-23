@@ -23,25 +23,33 @@ export class OpError extends Error {}
  * been navigated away fails immediately with an invalid-frame error. Both mean
  * the same thing to the caller — re-snapshot, don't retry.
  */
-function translateError(error: unknown, target?: Target, session?: Session): OpError {
+function translateError(
+  error: unknown,
+  target?: Target,
+  session?: Session,
+  startedAt?: number,
+): OpError {
   const message = error instanceof Error ? error.message : String(error);
 
   // A modal dialog blocks the page until answered, so anything in flight times
   // out. Say so rather than sending the caller hunting for a missing element —
-  // but only for a dialog from this action, not one answered minutes ago.
-  const recent = session?.lastAnsweredDialog;
+  // but only for a dialog this very action raised, or the timeout of some
+  // unrelated action would be blamed on a dialog handled long ago.
+  const answered = session?.lastAnsweredDialog;
+  const duringThisAction =
+    answered !== undefined && startedAt !== undefined && answered.at >= startedAt;
   const dialog = session?.pendingDialog
     ? `${session.pendingDialog.type}: ${session.pendingDialog.message}`
-    : recent && Date.now() - recent.at < 10_000
-      ? recent.text
+    : duringThisAction
+      ? answered.text
       : undefined;
   if (dialog && /Timeout .* exceeded/i.test(message)) {
     return new OpError(
       `The action was blocked by a dialog (${dialog}). ` +
         (session?.pendingDialog
           ? 'Answer it with browser_handle_dialog, then retry.'
-          : 'It was auto-dismissed. To accept it or supply prompt text, call ' +
-            'browser_handle_dialog before the action that opens it.'),
+          : `It was ${answered?.how ?? 'dismissed'}. To control the answer, call ` +
+            'browser_handle_dialog before the action that opens the dialog.'),
     );
   }
 
@@ -98,10 +106,11 @@ async function act<T>(
   fn: () => Promise<T>,
   session?: Session,
 ): Promise<T> {
+  const startedAt = Date.now();
   try {
     return await fn();
   } catch (error) {
-    throw translateError(error, target, session);
+    throw translateError(error, target, session, startedAt);
   }
 }
 
@@ -398,7 +407,9 @@ export async function waitFor(
   session: Session,
   options: { text?: string; textGone?: string; selector?: string; timeoutMs?: number },
 ): Promise<string> {
-  const timeout = Math.min(options.timeoutMs ?? 5_000, 15_000);
+  // Clamped below as well as above: Playwright reads 0 as "no timeout", which
+  // would hang the call (and an agent loop) indefinitely.
+  const timeout = Math.min(Math.max(options.timeoutMs ?? 5_000, 100), 15_000);
   const { page } = session;
   try {
     if (options.text) {
@@ -639,8 +650,11 @@ export function consoleLog(
   }
 
   if (options.clear) {
+    // Clearing a filtered read must not discard unread entries of other levels.
+    const kept = session.console.filter((entry) => !matchesLevel(entry.level, level));
     session.console.length = 0;
-    session.consoleReadSeq.clear();
+    session.console.push(...kept);
+    session.consoleReadSeq.delete(level);
   }
 
   const lines = shown.map(
@@ -654,11 +668,19 @@ export function consoleLog(
   return lines.join('\n') + note;
 }
 
+/**
+ * Maps a filter onto the console types Playwright actually emits. console.log
+ * arrives as "log", so an "info" filter that only matched "info" reported an
+ * empty buffer while log lines sat in it.
+ */
 function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
   if (filter === 'all') return true;
   // Uncaught page errors belong with console errors — they are the same signal.
   if (filter === 'error') return entryLevel === 'error' || entryLevel === 'pageerror';
-  return entryLevel === filter;
+  if (filter === 'warning') return entryLevel === 'warning' || entryLevel === 'warn';
+  return ['info', 'log', 'debug', 'trace', 'dir', 'table', 'count', 'timeEnd'].includes(
+    entryLevel,
+  );
 }
 
 export function networkLog(
@@ -828,26 +850,17 @@ function compile(
   scoped: boolean,
 ): (...args: unknown[]) => Promise<unknown> {
   const trimmed = expression.trim();
-  // A leading "(" alone is not enough: "(1+2)*4" is an expression, while
-  // "(el) => ..." and "(function(){})" are functions.
-  const looksLikeFunction =
-    /^(async\s+)?function\b/.test(trimmed) ||
-    /^(async\s+)?\([^)]*\)\s*=>/.test(trimmed) ||
-    /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(trimmed) ||
-    /^\(\s*(async\s+)?function\b/.test(trimmed);
   const build = (body: string) =>
     scoped ? new AsyncFunction('el', body) : new AsyncFunction(body);
 
-  if (looksLikeFunction) {
-    try {
-      return build(`return (${trimmed})(${scoped ? 'el' : ''});`);
-    } catch (error) {
-      throw new OpError(`Could not parse the function: ${(error as Error).message}`);
-    }
-  }
-
+  // Deciding "expression or function?" by pattern is unreliable — an IIFE like
+  // "(() => x)()" reads as a function literal but is already a call. Evaluate
+  // it, then call the result only if it actually turned out to be a function.
   try {
-    return build(`return (${trimmed});`);
+    return build(
+      `const __result = (${trimmed});` +
+        `return typeof __result === 'function' ? await __result(${scoped ? 'el' : ''}) : __result;`,
+    );
   } catch {
     // Not a single expression — treat it as a statement body, so callers can
     // write "const x = f(); return x" or several statements in a row.

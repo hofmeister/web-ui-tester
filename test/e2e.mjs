@@ -388,6 +388,38 @@ async function regressionChecks(client, fixture, sessionId) {
     );
   }
 
+  // An IIFE is already a call; treating it as a function literal called it twice.
+  const iife = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: '(() => document.querySelectorAll("input").length)()',
+  });
+  check('an IIFE is not called twice', iife.text.trim() === '3', iife.text);
+
+  // console.log arrives as type "log", which the info filter used to miss.
+  await call(client, 'browser_console', { sessionId, level: 'info', sinceLastCall: true });
+  await call(client, 'browser_evaluate', { sessionId, expression: 'console.log("info-line"); 1' });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const infoLevel = await call(client, 'browser_console', {
+    sessionId,
+    level: 'info',
+    sinceLastCall: true,
+  });
+  check('info level includes console.log', infoLevel.text.includes('info-line'), infoLevel.text);
+
+  // Clearing a filtered read used to wipe unread entries of other levels.
+  await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'console.warn("keep-me"); console.error("clear-me"); 1',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await call(client, 'browser_console', { sessionId, level: 'error', clear: true, sinceLastCall: false });
+  const survived = await call(client, 'browser_console', {
+    sessionId,
+    level: 'warning',
+    sinceLastCall: false,
+  });
+  check('a filtered clear keeps other levels', survived.text.includes('keep-me'), survived.text);
+
   // "(1+2)*4" was misread as a function literal and called.
   const parenExpr = await call(client, 'browser_evaluate', {
     sessionId,

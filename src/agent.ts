@@ -145,7 +145,7 @@ function buildTools(session: Session) {
         text: z.string().optional(),
         textGone: z.string().optional(),
         selector: z.string().optional(),
-        timeoutMs: z.number().int().optional(),
+        timeoutMs: z.number().int().min(100).max(15_000).optional(),
       }),
       execute: async (a) => clipped(await ops.waitFor(session, a)),
     }),

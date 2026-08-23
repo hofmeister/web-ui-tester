@@ -30,14 +30,22 @@ export interface ClipResult {
   totalChars: number;
 }
 
-/** Windows `text` to `maxChars` starting at `offset`, annotating what was cut. */
+/** Room kept for the paging note, so the whole result stays within budget. */
+const NOTE_RESERVE = 120;
+
+/**
+ * Windows `text` to `maxChars` starting at `offset`, annotating what was cut.
+ * The note counts against the budget: if the result overran, an outer cap would
+ * trim the note itself off the end and the stated offset would be wrong.
+ */
 export function clip(text: string, maxChars: number, offset = 0): ClipResult {
   const total = text.length;
   if (offset === 0 && total <= maxChars) {
     return { text, truncated: false, totalChars: total };
   }
   const start = Math.min(offset, total);
-  const slice = text.slice(start, start + maxChars);
+  const room = Math.max(50, maxChars - NOTE_RESERVE);
+  const slice = text.slice(start, start + room);
   const end = start + slice.length;
   const notes: string[] = [];
   if (start > 0) notes.push(`${start} chars before`);
