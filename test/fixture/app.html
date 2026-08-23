@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Web UI Tester Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+      .hidden-box { display: none; }
+      #result { color: #0a7; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Signup</h1>
+    <p>Fill in the form to create an account.</p>
+
+    <form id="signup">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" placeholder="Your name" />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="you@example.com" />
+
+      <label for="plan">Plan</label>
+      <select id="plan" name="plan">
+        <option value="free">Free</option>
+        <option value="pro">Pro</option>
+        <option value="team">Team</option>
+      </select>
+
+      <label><input id="terms" type="checkbox" /> I accept the terms</label>
+
+      <button id="submit" type="submit">Create account</button>
+    </form>
+
+    <p id="result"></p>
+    <button id="alert-btn" onclick="alert('fixture alert')">Show alert</button>
+    <button id="confirm-btn" onclick="document.getElementById('confirmed').textContent = confirm('Proceed?') ? 'confirmed yes' : 'confirmed no'">Ask confirm</button>
+    <p id="confirmed"></p>
+    <div class="hidden-box" id="secret">hidden content</div>
+    <p><a href="/second.html" id="next-link">Go to second page</a></p>
+
+    <script>
+      // Seeded diagnostics: one console error and one failing request, so the
+      // console and network tools have something real to report.
+      console.error('fixture: seeded console error');
+      fetch('/api/ok')
+        .then((r) => r.json())
+        .then((data) => console.info('fixture: api ok', data.status));
+      fetch('/api/missing').catch(() => {});
+
+      document.getElementById('signup').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const name = document.getElementById('name').value;
+        document.getElementById('result').textContent = name
+          ? `Account created for ${name}`
+          : 'Name is required';
+      });
+    </script>
+  </body>
+</html>
