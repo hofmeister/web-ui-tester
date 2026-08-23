@@ -229,7 +229,21 @@ export async function runTask(
 ): Promise<RunTaskResult> {
   const spec = options.model ?? session.options.model ?? config.model;
   const { model, label } = resolveModel(spec);
-  const maxSteps = options.maxSteps ?? config.agentMaxSteps;
+  return driveSession(session, model, label, {
+    instruction: options.instruction,
+    expectation: options.expectation,
+    maxSteps: options.maxSteps ?? config.agentMaxSteps,
+  });
+}
+
+/** The agent loop itself, over an already-resolved model. */
+export async function driveSession(
+  session: Session,
+  model: LanguageModel,
+  label: string,
+  options: { instruction: string; expectation?: string; maxSteps: number },
+): Promise<RunTaskResult> {
+  const maxSteps = options.maxSteps;
   const tools = buildTools(session);
 
   const consoleMark = session.console.length;

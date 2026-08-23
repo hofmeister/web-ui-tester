@@ -15,11 +15,14 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --clean --target node20",
+    "build": "tsup src/index.ts src/agent.ts src/server.ts src/session.ts src/config.ts --format esm --clean --target node20",
     "dev": "tsup src/index.ts --format esm --target node20 --watch",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
-    "test": "node test/e2e.mjs"
+    "test": "node test/agent.mjs && node test/e2e.mjs",
+    "test:agent": "node test/agent.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:agent:live": "node test/e2e-agent.mjs"
   },
   "keywords": [
     "mcp",
