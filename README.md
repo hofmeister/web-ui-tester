@@ -1,5 +1,7 @@
 # web-ui-tester
 
+[![CI](https://github.com/hofmeister/web-ui-tester/actions/workflows/ci.yml/badge.svg)](https://github.com/hofmeister/web-ui-tester/actions/workflows/ci.yml)
+
 An MCP server that lets an AI drive and inspect real web pages quickly, over browser sessions that stay alive between tool calls.
 
 Two things make it fast. Pages are exposed as an **accessibility tree with element refs** rather than screenshots or raw HTML, so the model can find and click things without burning context on markup or waiting on vision. And **sessions persist** — cookies, page state, and history survive across calls, so a long interaction is a series of cheap steps instead of repeated cold starts.
@@ -166,6 +168,8 @@ npm run typecheck
 ```
 
 `npm test` runs the agent loop against a scripted mock model, then drives the built server as a real MCP client over both transports against a local fixture app — covering refs, stale-ref handling, diagnostics, session persistence across reconnects, and idle reaping. `npm run test:agent:live` additionally exercises `run_task` against a real provider, and skips itself when no key is set.
+
+CI runs the typecheck, build, and both suites on Node 20 and 22 for every push and pull request. The live agent test runs separately — on demand via the **Live agent test** workflow, and weekly — because it makes real API calls; it needs `GOOGLE_GENERATIVE_AI_API_KEY` or `ANTHROPIC_API_KEY` as a repository secret, and the scheduled run skips itself when neither is set.
 
 ## License
 

@@ -1,0 +1,76 @@
+name: Live agent test
+
+# Costs real API calls, so it never runs automatically on a push or PR.
+# Secrets are also unavailable to fork PRs, which would make it fail there.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model override, e.g. google:gemini-flash-latest or anthropic:claude-haiku-4-5'
+        required: false
+        type: string
+  schedule:
+    # Weekly, to catch provider-side drift in tool calling or model IDs.
+    - cron: '0 6 * * 1'
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Checked before the browser install so a scheduled run without a key
+      # costs seconds. A manual run fails loudly instead, since the test skips
+      # itself when unconfigured and a skip would otherwise report green.
+      - name: Check for a provider key
+        id: key
+        env:
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$GOOGLE_GENERATIVE_AI_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
+            echo '::error::Set the GOOGLE_GENERATIVE_AI_API_KEY or ANTHROPIC_API_KEY repository secret to run this workflow.'
+            exit 1
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::No provider key configured; skipping the scheduled live run.'
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Cache Playwright browsers
+        id: browser-cache
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-live-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        run: npm ci
+
+      - name: Install Chromium
+        if: steps.key.outputs.present == 'true' && steps.browser-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      # A cache hit restores the browser but not the shared libraries it links.
+      - name: Install browser system dependencies
+        if: steps.key.outputs.present == 'true' && steps.browser-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run the live agent test
+        if: steps.key.outputs.present == 'true'
+        env:
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WUT_MODEL: ${{ inputs.model }}
+        run: npm run test:agent:live
