@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Config } from './config.js';
 import { buildServer } from './server.js';
 import type { SessionManager } from './session.js';
 
 const MCP_PATH = '/mcp';
+/** How long a client connection may sit unused before its transport is reclaimed. */
+const CONNECTION_IDLE_MS = 10 * 60 * 1000;
 
 export interface HttpServerHandle {
   close: () => Promise<void>;
@@ -22,8 +25,27 @@ export async function startHttpServer(
   config: Config,
   options: { port: number; host: string },
 ): Promise<HttpServerHandle> {
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  interface Connection {
+    transport: StreamableHTTPServerTransport;
+    server: McpServer;
+    lastSeen: number;
+  }
+  const transports = new Map<string, Connection>();
   const loopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(options.host);
+
+  // MCP clients commonly disconnect without sending DELETE, so an idle sweep is
+  // what actually reclaims a connection's transport and McpServer. Browser
+  // sessions live in the SessionManager and are deliberately untouched by this.
+  const sweeper = setInterval(() => {
+    for (const [id, connection] of transports) {
+      if (Date.now() - connection.lastSeen > CONNECTION_IDLE_MS) {
+        transports.delete(id);
+        // Closes the transport too, and releases the McpServer with it.
+        void connection.server.close().catch(() => {});
+      }
+    }
+  }, 60_000);
+  sweeper.unref?.();
 
   const http = createServer((req, res) => {
     void handle(req, res).catch((error: Error) => {
@@ -59,7 +81,8 @@ export async function startHttpServer(
     const sessionId = req.headers['mcp-session-id'];
     const existing = typeof sessionId === 'string' ? transports.get(sessionId) : undefined;
     if (existing) {
-      await existing.handleRequest(req, res);
+      existing.lastSeen = Date.now();
+      await existing.transport.handleRequest(req, res);
       return;
     }
 
@@ -74,10 +97,12 @@ export async function startHttpServer(
       return;
     }
 
+    // A fresh McpServer per connection; the browser sessions live outside it.
+    const server = buildServer(sessions, config);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        transports.set(id, transport);
+        transports.set(id, { transport, server, lastSeen: Date.now() });
       },
       onsessionclosed: (id) => {
         transports.delete(id);
@@ -101,8 +126,6 @@ export async function startHttpServer(
       if (transport.sessionId) transports.delete(transport.sessionId);
     };
 
-    // A fresh McpServer per connection; the browser sessions live outside it.
-    const server = buildServer(sessions, config);
     await server.connect(transport);
     await transport.handleRequest(req, res);
   }
@@ -127,8 +150,9 @@ export async function startHttpServer(
 
   return {
     close: async () => {
-      for (const transport of transports.values()) {
-        await transport.close().catch(() => {});
+      clearInterval(sweeper);
+      for (const connection of transports.values()) {
+        await connection.server.close().catch(() => {});
       }
       transports.clear();
       await new Promise<void>((resolve) => http.close(() => resolve()));

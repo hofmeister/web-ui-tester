@@ -34,6 +34,8 @@
 
     <p id="result"></p>
     <button id="alert-btn" onclick="alert('fixture alert')">Show alert</button>
+    <button id="confirm-btn" onclick="document.getElementById('confirmed').textContent = confirm('Proceed?') ? 'confirmed yes' : 'confirmed no'">Ask confirm</button>
+    <p id="confirmed"></p>
     <div class="hidden-box" id="secret">hidden content</div>
     <p><a href="/second.html" id="next-link">Go to second page</a></p>
 

@@ -318,6 +318,27 @@ async function regressionChecks(client, fixture, sessionId) {
     stillAlive.text.slice(0, 200),
   );
 
+  // A dialog blocks the page, so the action that opens one cannot answer it.
+  // Arming the answer beforehand is the only way to accept a confirm().
+  const armed = await call(client, 'browser_handle_dialog', { sessionId, accept: true });
+  check('handle_dialog arms when no dialog is open', /next one will be accepted/.test(armed.text), armed.text);
+  await call(client, 'browser_click', { sessionId, css: '#confirm-btn' });
+  const confirmed = await call(client, 'browser_read_text', { sessionId, css: '#confirmed' });
+  check('an armed accept answers the confirm', confirmed.text.includes('confirmed yes'), confirmed.text);
+
+  // Without arming, a confirm() is dismissed rather than stalling the click.
+  await call(client, 'browser_click', { sessionId, css: '#confirm-btn' });
+  const dismissed = await call(client, 'browser_read_text', { sessionId, css: '#confirmed' });
+  check('an unarmed confirm is dismissed', dismissed.text.includes('confirmed no'), dismissed.text);
+
+  // ensurePage used to re-attach listeners, duplicating every console entry.
+  await call(client, 'browser_console', { sessionId, sinceLastCall: true });
+  await call(client, 'browser_evaluate', { sessionId, expression: 'console.log("once-only"); 1' });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const once = await call(client, 'browser_console', { sessionId, sinceLastCall: true, limit: 200 });
+  const occurrences = (once.text.match(/once-only/g) ?? []).length;
+  check('console entries are not duplicated', occurrences === 1, `${occurrences}x: ${once.text}`);
+
   // Paged output used to be clipped twice, cutting off its own paging note.
   const page1 = await call(client, 'browser_snapshot', { sessionId, maxChars: 600 });
   const nextOffset = /Pass offset=(\d+)/.exec(page1.text)?.[1];

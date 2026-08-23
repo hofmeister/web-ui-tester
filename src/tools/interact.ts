@@ -250,8 +250,11 @@ export function registerInteractionTools(server: McpServer, context: ToolContext
     {
       title: 'Handle dialog',
       description:
-        'Accepts or dismisses an open alert/confirm/prompt. Dialogs are captured automatically ' +
-        'and reported in browser_console; unhandled ones auto-dismiss after 10 seconds.',
+        'Answers an alert/confirm/prompt. A dialog blocks the page until it is answered, so an ' +
+        'unanswered one is dismissed automatically rather than stalling the action that opened ' +
+        'it. Call this BEFORE the action that triggers a dialog to arm the answer — that is the ' +
+        'only way to accept one or supply prompt() text. Called while a dialog is open, it ' +
+        'answers that dialog immediately.',
       inputSchema: {
         sessionId: sessionIdSchema,
         accept: z.boolean().describe('True to accept, false to dismiss.'),

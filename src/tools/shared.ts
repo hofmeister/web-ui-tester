@@ -38,6 +38,15 @@ export const targetShape = {
     .describe('Which match to use when the selector is ambiguous (0-based, default 0).'),
 };
 
+/**
+ * Caller budgets must stay within the configured cap: a larger value would be
+ * honoured by the tool and then clipped again by capResult, producing two
+ * conflicting paging notes and a gap between pages.
+ */
+export function budget(requested: number | undefined, config: Config): number {
+  return Math.min(requested ?? config.maxOutputChars, config.maxOutputChars);
+}
+
 export function text(body: string): CallToolResult {
   return { content: [{ type: 'text', text: body }] };
 }

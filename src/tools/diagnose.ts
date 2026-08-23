@@ -1,7 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ops from '../ops.js';
-import { register, sessionIdSchema, targetShape, text, type ToolContext } from './shared.js';
+import {
+  budget,
+  register,
+  sessionIdSchema,
+  targetShape,
+  text,
+  type ToolContext,
+} from './shared.js';
 
 type TargetArgs = {
   sessionId: string;
@@ -134,7 +141,7 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
           session,
           a.id,
           a.part ?? 'summary',
-          a.maxChars ?? 10_000,
+          Math.min(a.maxChars ?? 10_000, context.config.maxOutputChars),
           a.offset ?? 0,
         ),
       );
@@ -162,7 +169,14 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
     async (args) => {
       const a = args as unknown as TargetArgs & { expression: string; maxChars?: number };
       const session = context.sessions.get(a.sessionId);
-      return text(await ops.evaluate(session, a.expression, target(a), a.maxChars ?? 10_000));
+      return text(
+        await ops.evaluate(
+          session,
+          a.expression,
+          target(a),
+          Math.min(a.maxChars ?? 10_000, context.config.maxOutputChars),
+        ),
+      );
     },
   );
 

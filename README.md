@@ -73,7 +73,9 @@ Element-addressing tools also accept `css`, or `role` + `name`, when you already
 
 **Interaction** — `browser_navigate`, `browser_click`, `browser_type`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_scroll`, `browser_wait_for`, `browser_go_back`, `browser_handle_dialog`.
 
-Actions report what they caused: navigation, new console errors, and request counts come back with the result, so a click that quietly broke something doesn't look like a success.
+Actions report what they caused: navigation, new console errors, request counts, and any dialog that appeared come back with the result, so a click that quietly broke something doesn't look like a success.
+
+Dialogs need one note. An `alert`/`confirm`/`prompt` blocks the page until it's answered, so the action that opened it can't also answer it — an unanswered dialog is dismissed automatically rather than stalling the click, and the result says so. To accept one, or to fill in a `prompt`, call `browser_handle_dialog` *before* the action that triggers it and the answer is armed for the next dialog.
 
 **Inspection** — `browser_snapshot` (scopeable by element, `depth`-limited, `interactiveOnly`, offset-paged), `browser_query` (find by role/name, text, or CSS — returns refs and state), `browser_read_text` (rendered text of the page or one subtree), `browser_screenshot` (available, but the tree is usually the better tool).
 

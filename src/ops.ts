@@ -27,16 +27,21 @@ function translateError(error: unknown, target?: Target, session?: Session): OpE
   const message = error instanceof Error ? error.message : String(error);
 
   // A modal dialog blocks the page until answered, so anything in flight times
-  // out. Say so rather than sending the caller hunting for a missing element.
+  // out. Say so rather than sending the caller hunting for a missing element —
+  // but only for a dialog from this action, not one answered minutes ago.
+  const recent = session?.lastAnsweredDialog;
   const dialog = session?.pendingDialog
     ? `${session.pendingDialog.type}: ${session.pendingDialog.message}`
-    : session?.lastDismissedDialog;
+    : recent && Date.now() - recent.at < 10_000
+      ? recent.text
+      : undefined;
   if (dialog && /Timeout .* exceeded/i.test(message)) {
     return new OpError(
       `The action was blocked by a dialog (${dialog}). ` +
         (session?.pendingDialog
           ? 'Answer it with browser_handle_dialog, then retry.'
-          : 'It was dismissed automatically; the action can be retried.'),
+          : 'It was auto-dismissed. To accept it or supply prompt text, call ' +
+            'browser_handle_dialog before the action that opens it.'),
     );
   }
 
@@ -148,10 +153,16 @@ function activitySince(session: Session, marks: { console: number; network: numb
     (entry) => entry.seq > marks.console && entry.level === 'dialog',
   );
   for (const dialog of dialogs) {
+    if (session.pendingDialog) {
+      lines.push(`dialog open (${dialog.text}) — answer it with browser_handle_dialog`);
+      continue;
+    }
+    const how = session.lastAnsweredDialog?.how ?? 'auto-dismissed';
     lines.push(
-      session.pendingDialog
-        ? `dialog open (${dialog.text}) — answer it with browser_handle_dialog`
-        : `dialog appeared and was auto-dismissed: ${dialog.text}`,
+      `dialog ${how}: ${dialog.text}` +
+        (how === 'auto-dismissed'
+          ? ' (call browser_handle_dialog beforehand to accept it instead)'
+          : ''),
     );
   }
 
@@ -312,9 +323,10 @@ export async function type(
     await act(target, async () => {
       if (options.clear === false) {
         // Click alone leaves the caret where it landed, which inserts mid-value.
-        // Move to the end so "append" actually appends.
+        // Control+End reaches the end of the whole value; plain End stops at
+        // the end of the current line, which is wrong for a textarea.
         await locator.click();
-        await locator.press('End');
+        await locator.press('Control+End');
         await locator.pressSequentially(text);
       } else {
         await locator.fill(text);
@@ -430,7 +442,17 @@ export async function handleDialog(
   promptText?: string,
 ): Promise<string> {
   const pending = session.pendingDialog;
-  if (!pending) return 'No dialog is currently open.';
+  if (!pending) {
+    // A dialog blocks the page until answered, so the action that opens one
+    // cannot also answer it. Arming a policy is how confirm() and prompt()
+    // flows get an answer other than "dismiss".
+    session.dialogPolicy = { accept, promptText };
+    return (
+      `No dialog is open right now, so the next one will be ${accept ? 'accepted' : 'dismissed'}` +
+      `${accept && promptText !== undefined ? ` with text ${JSON.stringify(promptText)}` : ''}. ` +
+      'This applies to one dialog; arm it again for the next.'
+    );
+  }
   clearTimeout(pending.timer);
   session.pendingDialog = undefined;
   if (accept) {

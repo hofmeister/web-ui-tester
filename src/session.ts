@@ -73,8 +73,10 @@ export class Session {
   pendingDialog?: PendingDialog;
   /** Set when a popup replaces the active page, so the next tool result can say so. */
   pendingNotice?: string;
-  /** Last dialog auto-dismissed on timeout, so an action can explain itself. */
-  lastDismissedDialog?: string;
+  /** How the most recent dialog was answered, so an action can explain itself. */
+  lastAnsweredDialog?: { text: string; how: string; at: number };
+  /** Pre-armed answer for the next dialog, set by browser_handle_dialog. */
+  dialogPolicy?: { accept: boolean; promptText?: string };
   /** How long an unanswered dialog is held; set from the action timeout. */
   dialogHoldMs = 3_000;
 
@@ -84,6 +86,7 @@ export class Session {
    */
   private consoleSeq = 0;
   private nextRequestId = 1;
+  private readonly attached = new WeakSet<Page>();
   private readonly requestStarts = new WeakMap<Request, number>();
 
   constructor(
@@ -131,6 +134,7 @@ export class Session {
     const page = await this.context.newPage();
     this.activePage = page;
     this.attach(page);
+    this.pendingNotice = undefined;
     return page;
   }
 
@@ -187,6 +191,12 @@ export class Session {
   }
 
   private attach(page: Page): void {
+    // The context's 'page' event already attaches new pages; guard so a second
+    // path (ensurePage) cannot double-register every listener, which would
+    // duplicate buffer entries and make two handlers race for one dialog.
+    if (this.attached.has(page)) return;
+    this.attached.add(page);
+
     page.on('console', (message) => {
       const location = message.location();
       this.pushConsole({
@@ -262,6 +272,22 @@ export class Session {
         level: 'dialog',
         text: `${dialog.type()}: ${dialog.message()}`,
       });
+
+      // A dialog blocks the page until answered, so the action that opened it
+      // cannot also answer it. A policy armed beforehand is the only way to
+      // accept one, or to supply prompt() text.
+      const policy = this.dialogPolicy;
+      if (policy) {
+        this.dialogPolicy = undefined;
+        this.lastAnsweredDialog = {
+          text: `${dialog.type()}: ${dialog.message()}`,
+          how: policy.accept ? 'accepted' : 'dismissed',
+          at: Date.now(),
+        };
+        const answer = policy.accept ? dialog.accept(policy.promptText) : dialog.dismiss();
+        answer.catch(() => {});
+        return;
+      }
       // A dialog blocks the page's JS until it is answered, so a previous one
       // must be dismissed rather than dropped — otherwise the page hangs and
       // the dialog is no longer reachable through browser_handle_dialog.
@@ -276,7 +302,11 @@ export class Session {
       const timer = setTimeout(() => {
         if (this.pendingDialog?.dialog === dialog) {
           this.pendingDialog = undefined;
-          this.lastDismissedDialog = `${dialog.type()}: ${dialog.message()}`;
+          this.lastAnsweredDialog = {
+            text: `${dialog.type()}: ${dialog.message()}`,
+            how: 'auto-dismissed',
+            at: Date.now(),
+          };
           dialog.dismiss().catch(() => {});
         }
       }, this.dialogHoldMs);

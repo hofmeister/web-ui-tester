@@ -1,7 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ops from '../ops.js';
-import { register, sessionIdSchema, targetShape, text, type ToolContext } from './shared.js';
+import {
+  budget,
+  register,
+  sessionIdSchema,
+  targetShape,
+  text,
+  type ToolContext,
+} from './shared.js';
 
 type TargetArgs = {
   sessionId: string;
@@ -62,7 +69,7 @@ export function registerInspectionTools(server: McpServer, context: ToolContext)
           depth: a.depth,
           boxes: a.boxes,
           interactiveOnly: a.interactiveOnly,
-          maxChars: a.maxChars ?? context.config.maxOutputChars,
+          maxChars: budget(a.maxChars, context.config),
           offset: a.offset,
         }),
       );
@@ -132,7 +139,7 @@ export function registerInspectionTools(server: McpServer, context: ToolContext)
       return text(
         await ops.readText(session, {
           target: target(a),
-          maxChars: a.maxChars ?? 8_000,
+          maxChars: Math.min(a.maxChars ?? 8_000, context.config.maxOutputChars),
           offset: a.offset,
         }),
       );
