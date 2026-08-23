@@ -42,6 +42,16 @@ function pagingNote(start: number, end: number, total: number): string {
 }
 
 /**
+ * Truncates without promising pagination — for the outer safety cap, which also
+ * covers tools that have no offset parameter to follow the advice with.
+ */
+export function clipHard(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const note = `\n…[truncated ${text.length - maxChars} chars]`;
+  return text.slice(0, Math.max(0, maxChars - note.length)) + note;
+}
+
+/**
  * Windows `text` to `maxChars` starting at `offset`, annotating what was cut.
  * The note counts against the budget: if the result overran, an outer cap would
  * trim the note itself off the end and the stated offset would be wrong. Its
@@ -56,7 +66,9 @@ export function clip(text: string, maxChars: number, offset = 0): ClipResult {
   // Reserve against the longest note this call could emit: every clause
   // present, every number at its widest. Probing with a guessed end
   // under-reserves whenever that guess lands on a shorter variant of the note.
-  const reserve = pagingNote(start, start, total).length + String(total).length;
+  // The end offset appears twice in the note ("start-end" and "offset=end"),
+  // so both occurrences need room to grow to their widest.
+  const reserve = pagingNote(start, start, total).length + 2 * String(total).length;
   const room = Math.max(50, maxChars - reserve);
   const slice = text.slice(start, start + room);
   const end = start + slice.length;

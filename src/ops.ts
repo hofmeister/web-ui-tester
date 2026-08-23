@@ -599,22 +599,44 @@ export async function readText(
   return withHeader(session, text, options.maxChars, options.offset);
 }
 
+/**
+ * Images bypass the text budget, so a tall full-page capture could return
+ * hundreds of kilobytes of base64. Retry once at lower quality, then refuse
+ * rather than flooding the caller's context.
+ */
+const SCREENSHOT_MAX_BYTES = 1_500_000;
+
 export async function screenshot(
   session: Session,
   options: { target?: Target; fullPage?: boolean },
 ): Promise<{ base64: string; mimeType: string }> {
-  const shot =
-    options.target && (options.target.ref || options.target.css || options.target.role)
-      ? await act(options.target, () =>
-          locate(session, options.target!).screenshot({ type: 'jpeg', quality: 60 }),
+  const scoped = Boolean(
+    options.target && (options.target.ref || options.target.css || options.target.role),
+  );
+  const capture = (quality: number) =>
+    scoped
+      ? act(options.target, () =>
+          locate(session, options.target!).screenshot({ type: 'jpeg', quality }),
         )
-      : await act(undefined, () =>
+      : act(undefined, () =>
           session.page.screenshot({
             type: 'jpeg',
-            quality: 60,
+            quality,
             fullPage: options.fullPage ?? false,
           }),
         );
+
+  let shot = await capture(60);
+  if (shot.byteLength > SCREENSHOT_MAX_BYTES) shot = await capture(30);
+  if (shot.byteLength > SCREENSHOT_MAX_BYTES) {
+    throw new OpError(
+      `The screenshot is ${Math.round(shot.byteLength / 1024)}KB, too large to return. ` +
+        (options.fullPage
+          ? 'Capture the viewport instead of fullPage, or target a specific element.'
+          : 'Target a specific element with ref or css.') +
+        ' browser_snapshot and browser_read_text cover most questions without an image.',
+    );
+  }
   return { base64: shot.toString('base64'), mimeType: 'image/jpeg' };
 }
 
@@ -763,15 +785,14 @@ export async function requestDetail(
   }
 
   if (part === 'headers') {
-    return [
-      formatNetworkLine(entry),
-      '',
+    const body = [
       'request headers:',
       formatHeaders(entry.requestHeaders),
       '',
       'response headers:',
       entry.responseHeaders ? formatHeaders(entry.responseHeaders) : '(none)',
     ].join('\n');
+    return withPrefix(`${formatNetworkLine(entry)}\n\n`, body, maxChars, offset);
   }
 
   if (part === 'requestBody') {
@@ -795,8 +816,7 @@ export async function requestDetail(
       ].join('\n')
     : '  (unavailable)';
 
-  return [
-    formatNetworkLine(entry),
+  const summary = [
     `resourceType: ${entry.resourceType}`,
     entry.failure ? `failure: ${entry.failure}` : '',
     `content-type: ${entry.responseHeaders?.['content-type'] ?? '(unknown)'}`,
@@ -811,6 +831,7 @@ export async function requestDetail(
   ]
     .filter(Boolean)
     .join('\n');
+  return withPrefix(`${formatNetworkLine(entry)}\n`, summary, maxChars, offset);
 }
 
 /**
@@ -932,7 +953,22 @@ function compile(
     );
   } catch {
     // Not a single expression — treat it as a statement body, so callers can
-    // write "const x = f(); return x" or several statements in a row.
+    // write several statements in a row. Without an explicit return, the last
+    // statement is treated as the value, matching how a console would behave.
+    if (!/\breturn\b/.test(trimmed)) {
+      const split = trimmed.lastIndexOf(';');
+      if (split !== -1) {
+        const head = trimmed.slice(0, split + 1);
+        const tail = trimmed.slice(split + 1).trim();
+        if (tail) {
+          try {
+            return build(`${head} return (${tail});`);
+          } catch {
+            // Not a trailing expression; fall through to the plain body.
+          }
+        }
+      }
+    }
     try {
       return build(trimmed);
     } catch (error) {

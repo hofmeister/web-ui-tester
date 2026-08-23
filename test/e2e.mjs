@@ -466,6 +466,17 @@ async function regressionChecks(client, fixture, sessionId) {
     secondBatch.text,
   );
 
+  // A statement body without an explicit return used to yield undefined.
+  const implicitReturn = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: "const rows = document.querySelectorAll('input'); rows.length",
+  });
+  check(
+    'the last statement is the value',
+    implicitReturn.text.trim() === '3',
+    implicitReturn.text,
+  );
+
   // A trailing semicolon used to break the expression form, yielding undefined.
   const semi = await call(client, 'browser_evaluate', {
     sessionId,

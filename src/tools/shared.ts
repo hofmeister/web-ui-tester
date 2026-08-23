@@ -4,7 +4,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Config } from '../config.js';
 import { OpError } from '../ops.js';
 import type { SessionManager } from '../session.js';
-import { clip } from '../snapshot.js';
+import { clipHard } from '../snapshot.js';
 
 export interface ToolContext {
   sessions: SessionManager;
@@ -99,7 +99,7 @@ function capResult(result: CallToolResult, maxChars: number): CallToolResult {
   return {
     ...result,
     content: result.content.map((block) =>
-      block.type === 'text' ? { ...block, text: clip(block.text, maxChars).text } : block,
+      block.type === 'text' ? { ...block, text: clipHard(block.text, maxChars) } : block,
     ),
   };
 }
