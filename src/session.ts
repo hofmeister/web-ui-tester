@@ -7,7 +7,6 @@ const CONSOLE_BUFFER_MAX = 500;
 const NETWORK_BUFFER_MAX = 300;
 /** Bodies at or below this size are cached eagerly so they survive navigation. */
 const BODY_CACHE_MAX_BYTES = 256 * 1024;
-const DIALOG_AUTO_DISMISS_MS = 10_000;
 
 export interface ConsoleEntry {
   /** Monotonic, so cursors and marks survive ring-buffer eviction. */
@@ -74,6 +73,10 @@ export class Session {
   pendingDialog?: PendingDialog;
   /** Set when a popup replaces the active page, so the next tool result can say so. */
   pendingNotice?: string;
+  /** Last dialog auto-dismissed on timeout, so an action can explain itself. */
+  lastDismissedDialog?: string;
+  /** How long an unanswered dialog is held; set from the action timeout. */
+  dialogHoldMs = 3_000;
 
   /**
    * Monotonic counters, never reset by ring-buffer eviction. Array indices
@@ -100,22 +103,35 @@ export class Session {
   }
 
   get page(): Page {
+    const alive = this.livePage();
+    if (alive) return alive;
+    throw new Error(
+      `Session ${this.id} has no open page left. Call browser_navigate to open a new one, ` +
+        'or browser_close to discard the session.',
+    );
+  }
+
+  /** The active page, or another live one if it closed. Never throws. */
+  livePage(): Page | undefined {
     const current = this.activePage;
-    if (!current.isClosed()) return current;
-    // The active page closed (a popup dismissed itself, or script closed it).
-    // Fall back to another live page so the session stays usable.
+    if (current && !current.isClosed()) return current;
+    // A popup dismissed itself, or script closed the page.
     const alive = this.context.pages().find((page) => !page.isClosed());
-    if (!alive) {
-      throw new Error(
-        `Session ${this.id} has no open page left. Call browser_navigate to open one, ` +
-          'or browser_close and start a new session.',
-      );
-    }
-    if (alive !== current) {
+    if (alive && alive !== current) {
       this.activePage = alive;
       this.pendingNotice = `The previous page closed; now active: ${alive.url()}`;
     }
     return alive;
+  }
+
+  /** Reopens a page after all of them closed, so the session can recover. */
+  async ensurePage(): Promise<Page> {
+    const alive = this.livePage();
+    if (alive) return alive;
+    const page = await this.context.newPage();
+    this.activePage = page;
+    this.attach(page);
+    return page;
   }
 
   touch(): void {
@@ -254,12 +270,16 @@ export class Session {
         clearTimeout(superseded.timer);
         superseded.dialog.dismiss().catch(() => {});
       }
+      // Held briefly so browser_handle_dialog can answer it, but always for
+      // less than an action timeout: the click that opened the dialog is
+      // blocked until it is answered, and must not be the thing that fails.
       const timer = setTimeout(() => {
         if (this.pendingDialog?.dialog === dialog) {
           this.pendingDialog = undefined;
+          this.lastDismissedDialog = `${dialog.type()}: ${dialog.message()}`;
           dialog.dismiss().catch(() => {});
         }
-      }, DIALOG_AUTO_DISMISS_MS);
+      }, this.dialogHoldMs);
       timer.unref?.();
       this.pendingDialog = {
         type: dialog.type(),
@@ -341,6 +361,9 @@ export class SessionManager {
     const page = await context.newPage();
     const id = `s${randomBytes(4).toString('hex')}`;
     const session = new Session(id, options, context, page);
+    // Must expire before an action times out; the action that opened the dialog
+    // stays blocked until the dialog is answered.
+    session.dialogHoldMs = Math.max(1_000, Math.round(this.config.actionTimeoutMs * 0.5));
     this.sessions.set(id, session);
     this.startReaper();
     return session;

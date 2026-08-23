@@ -111,6 +111,12 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
           .optional()
           .describe('Which part to return. Defaults to "summary".'),
         maxChars: z.number().int().min(500).optional(),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Start offset into the body, for paging through a long one.'),
       },
       readOnly: true,
     },
@@ -120,6 +126,7 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
         id: number;
         part?: 'summary' | 'headers' | 'requestBody' | 'responseBody';
         maxChars?: number;
+        offset?: number;
       };
       const session = context.sessions.get(a.sessionId);
       return text(
@@ -128,6 +135,7 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
           a.id,
           a.part ?? 'summary',
           a.maxChars ?? 10_000,
+          a.offset ?? 0,
         ),
       );
     },

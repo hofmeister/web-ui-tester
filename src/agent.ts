@@ -84,15 +84,10 @@ function buildTools(session: Session) {
           .describe('Only actionable elements — cheaper on large pages.'),
         depth: z.number().int().optional().describe('Limit tree depth.'),
       }),
+      // ops.snapshot already budgets to maxChars; clipping again here would cut
+      // off its own truncation note.
       execute: async ({ interactiveOnly, depth }) =>
-        clip(
-          await ops.snapshot(session, {
-            interactiveOnly,
-            depth,
-            maxChars: AGENT_SNAPSHOT_CHARS,
-          }),
-          AGENT_SNAPSHOT_CHARS,
-        ).text,
+        ops.snapshot(session, { interactiveOnly, depth, maxChars: AGENT_SNAPSHOT_CHARS }),
     }),
 
     navigate: tool({

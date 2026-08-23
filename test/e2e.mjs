@@ -303,6 +303,77 @@ async function regressionChecks(client, fixture, sessionId) {
     warningsAfter.text,
   );
 
+  // A dialog blocks the page until answered; the click that opened it used to
+  // be the thing that failed, with an error blaming the element.
+  const alertClick = await call(client, 'browser_click', { sessionId, css: '#alert-btn' });
+  check(
+    'a dialog-triggering click explains itself',
+    /dialog/i.test(alertClick.text),
+    alertClick.text.slice(0, 300),
+  );
+  const stillAlive = await call(client, 'browser_snapshot', { sessionId });
+  check(
+    'session recovers after a dialog',
+    !stillAlive.isError && /\[ref=[a-z0-9]+\]/.test(stillAlive.text),
+    stillAlive.text.slice(0, 200),
+  );
+
+  // Paged output used to be clipped twice, cutting off its own paging note.
+  const page1 = await call(client, 'browser_snapshot', { sessionId, maxChars: 600 });
+  const nextOffset = /Pass offset=(\d+)/.exec(page1.text)?.[1];
+  check('a clipped snapshot keeps its paging note', Boolean(nextOffset), page1.text.slice(-200));
+  if (nextOffset) {
+    const page2 = await call(client, 'browser_snapshot', {
+      sessionId,
+      maxChars: 600,
+      offset: Number(nextOffset),
+    });
+    check(
+      'the next page continues where the first stopped',
+      page2.text.includes(`showing chars ${nextOffset}-`),
+      page2.text.slice(-200),
+    );
+  }
+
+  // A scoped snapshot narrows Playwright's aria-ref registry, so refs reported
+  // for earlier matches used to stop resolving.
+  const multiQuery = await call(client, 'browser_query', { sessionId, role: 'button' });
+  const allRefs = [...multiQuery.text.matchAll(/ref=([a-z0-9]+)/gi)].map((m) => m[1]);
+  check('query found both buttons', allRefs.length >= 2, multiQuery.text);
+  if (allRefs.length >= 2) {
+    const inspectFirst = await call(client, 'browser_inspect_element', {
+      sessionId,
+      ref: allRefs[0],
+    });
+    check(
+      'the first query ref still resolves after later matches',
+      !inspectFirst.isError,
+      inspectFirst.text.slice(0, 200),
+    );
+  }
+
+  // A scoped browser_snapshot must not break refs outside its subtree either.
+  await call(client, 'browser_snapshot', { sessionId, css: '#signup' });
+  const outsideRef = allRefs[allRefs.length - 1];
+  if (outsideRef) {
+    const afterScoped = await call(client, 'browser_inspect_element', {
+      sessionId,
+      ref: outsideRef,
+    });
+    check(
+      'refs survive a scoped snapshot',
+      !afterScoped.isError,
+      afterScoped.text.slice(0, 200),
+    );
+  }
+
+  // "(1+2)*4" was misread as a function literal and called.
+  const parenExpr = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: '(1+2)*4',
+  });
+  check('a parenthesised expression is not called', parenExpr.text.trim() === '12', parenExpr.text);
+
   // browser_start used to strand the context when the first navigation failed.
   const badStart = await call(client, 'browser_start', {
     url: 'http://127.0.0.1:1/nothing-here',

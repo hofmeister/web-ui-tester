@@ -23,8 +23,23 @@ export class OpError extends Error {}
  * been navigated away fails immediately with an invalid-frame error. Both mean
  * the same thing to the caller — re-snapshot, don't retry.
  */
-function translateError(error: unknown, target?: Target): OpError {
+function translateError(error: unknown, target?: Target, session?: Session): OpError {
   const message = error instanceof Error ? error.message : String(error);
+
+  // A modal dialog blocks the page until answered, so anything in flight times
+  // out. Say so rather than sending the caller hunting for a missing element.
+  const dialog = session?.pendingDialog
+    ? `${session.pendingDialog.type}: ${session.pendingDialog.message}`
+    : session?.lastDismissedDialog;
+  if (dialog && /Timeout .* exceeded/i.test(message)) {
+    return new OpError(
+      `The action was blocked by a dialog (${dialog}). ` +
+        (session?.pendingDialog
+          ? 'Answer it with browser_handle_dialog, then retry.'
+          : 'It was dismissed automatically; the action can be retried.'),
+    );
+  }
+
   const staleRefHint =
     `Ref "${target?.ref}" is no longer valid — the page has changed since the snapshot ` +
     'that produced it. Call browser_snapshot for fresh refs, then retry.';
@@ -73,11 +88,15 @@ export function locate(session: Session, target: Target): Locator {
   return target.index !== undefined ? locator.nth(target.index) : locator.first();
 }
 
-async function act<T>(target: Target | undefined, fn: () => Promise<T>): Promise<T> {
+async function act<T>(
+  target: Target | undefined,
+  fn: () => Promise<T>,
+  session?: Session,
+): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    throw translateError(error, target);
+    throw translateError(error, target, session);
   }
 }
 
@@ -110,7 +129,7 @@ export async function miniSnapshot(session: Session): Promise<string> {
     : clipped.text;
 }
 
-/** Console errors that appeared while an action ran, so failures are noticed. */
+/** What an action caused — errors, requests, dialogs — so nothing goes unnoticed. */
 function activitySince(session: Session, marks: { console: number; network: number }): string {
   const errors = session.countConsoleErrorsSince(marks.console);
   const since = session.requestsSince(marks.network);
@@ -120,7 +139,23 @@ function activitySince(session: Session, marks: { console: number; network: numb
   if (since.length) {
     parts.push(`${since.length} request(s)${failed ? `, ${failed} failed/4xx/5xx` : ''}`);
   }
-  return parts.length ? `\nactivity: ${parts.join('; ')}` : '';
+
+  const lines = parts.length ? [`activity: ${parts.join('; ')}`] : [];
+
+  // A dialog blocks the page, so it is answered quickly rather than left to
+  // stall the action. Say what happened either way.
+  const dialogs = session.console.filter(
+    (entry) => entry.seq > marks.console && entry.level === 'dialog',
+  );
+  for (const dialog of dialogs) {
+    lines.push(
+      session.pendingDialog
+        ? `dialog open (${dialog.text}) — answer it with browser_handle_dialog`
+        : `dialog appeared and was auto-dismissed: ${dialog.text}`,
+    );
+  }
+
+  return lines.length ? `\n${lines.join('\n')}` : '';
 }
 
 export interface ActionResult {
@@ -199,7 +234,10 @@ export function listSessions(sessions: SessionManager): string {
     .map((session) => {
       const age = Math.round((Date.now() - session.createdAt) / 1000);
       const idle = Math.round(session.idleMs / 1000);
-      return `${session.id}  ${session.page.url() || 'about:blank'}  (age ${age}s, idle ${idle}s, ua ${session.options.userAgent})`;
+      // livePage(), not page: one session without a live page must not break
+      // the listing for every other session.
+      const url = session.livePage()?.url() || '(no open page)';
+      return `${session.id}  ${url}  (age ${age}s, idle ${idle}s, ua ${session.options.userAgent})`;
     })
     .join('\n');
 }
@@ -213,16 +251,19 @@ export async function navigate(
 ): Promise<string> {
   const resolved = session.resolveUrl(url);
   const marks = session.marks();
+  // Reopens a page if every one of them closed, so navigate is the documented
+  // way back from an empty session rather than another failure.
+  const page = await session.ensurePage();
   const response = await act(undefined, async () => {
     try {
-      return await session.page.goto(resolved, { waitUntil, timeout: 30_000 });
+      return await page.goto(resolved, { waitUntil, timeout: 30_000 });
     } catch (error) {
       // Navigating straight after a failed load races with Chrome committing
       // its error page. Let that settle, then retry once.
       if (!/interrupted by another navigation/i.test((error as Error).message)) throw error;
-      await session.page.waitForLoadState('load', { timeout: 10_000 }).catch(() => {});
-      if (session.page.url() === resolved) return null;
-      return await session.page.goto(resolved, { waitUntil, timeout: 30_000 });
+      await page.waitForLoadState('load', { timeout: 10_000 }).catch(() => {});
+      if (page.url() === resolved) return null;
+      return await page.goto(resolved, { waitUntil, timeout: 30_000 });
     }
   });
   const status = response ? `${response.status()} ${response.statusText()}` : 'no response';
@@ -251,8 +292,10 @@ export async function click(
         ? { modifiers: options.modifiers as ('Alt' | 'Control' | 'Meta' | 'Shift')[] }
         : {}),
     } as const;
-    await act(target, () =>
-      options.doubleClick ? locator.dblclick(clickOptions) : locator.click(clickOptions),
+    await act(
+      target,
+      () => (options.doubleClick ? locator.dblclick(clickOptions) : locator.click(clickOptions)),
+      session,
     );
     return `clicked ${describeTarget(target)}`;
   });
@@ -268,13 +311,16 @@ export async function type(
     const locator = locate(session, target);
     await act(target, async () => {
       if (options.clear === false) {
+        // Click alone leaves the caret where it landed, which inserts mid-value.
+        // Move to the end so "append" actually appends.
         await locator.click();
+        await locator.press('End');
         await locator.pressSequentially(text);
       } else {
         await locator.fill(text);
       }
       if (options.submit) await locator.press('Enter');
-    });
+    }, session);
     return `typed ${JSON.stringify(text)} into ${describeTarget(target)}${
       options.submit ? ' and pressed Enter' : ''
     }`;
@@ -288,7 +334,7 @@ export async function pressKey(
 ): Promise<string> {
   return withActivity(session, async () => {
     if (target && (target.ref || target.css || target.role)) {
-      await act(target, () => locate(session, target).press(key));
+      await act(target, () => locate(session, target).press(key), session);
       return `pressed ${key} on ${describeTarget(target)}`;
     }
     await act(undefined, () => session.page.keyboard.press(key));
@@ -298,7 +344,7 @@ export async function pressKey(
 
 export async function hover(session: Session, target: Target): Promise<string> {
   return withActivity(session, async () => {
-    await act(target, () => locate(session, target).hover());
+    await act(target, () => locate(session, target).hover(), session);
     return `hovered ${describeTarget(target)}`;
   });
 }
@@ -309,7 +355,11 @@ export async function selectOption(
   values: string[],
 ): Promise<string> {
   return withActivity(session, async () => {
-    const selected = await act(target, () => locate(session, target).selectOption(values));
+    const selected = await act(
+      target,
+      () => locate(session, target).selectOption(values),
+      session,
+    );
     return `selected ${JSON.stringify(selected)} in ${describeTarget(target)}`;
   });
 }
@@ -404,10 +454,10 @@ export async function snapshot(
     offset?: number;
   },
 ): Promise<string> {
-  const scoped =
-    options.target && (options.target.ref || options.target.css || options.target.role)
-      ? locate(session, options.target)
-      : session.page;
+  const isScoped = Boolean(
+    options.target && (options.target.ref || options.target.css || options.target.role),
+  );
+  const scoped = isScoped ? locate(session, options.target!) : session.page;
   const text = await act(options.target, () =>
     ariaSnapshot(scoped, {
       depth: options.depth,
@@ -415,8 +465,36 @@ export async function snapshot(
       interactiveOnly: options.interactiveOnly,
     }),
   );
-  const clipped = clip(text, options.maxChars, options.offset ?? 0);
-  return `${await stateLine(session)}\n\n${clipped.text}`;
+  if (isScoped) await restoreRefRegistry(session);
+  return withHeader(session, text, options.maxChars, options.offset);
+}
+
+/**
+ * Playwright resolves `aria-ref=` against the most recent snapshot, so a scoped
+ * snapshot narrows the registry to that subtree and refs outside it stop
+ * resolving. Refs are keyed to DOM nodes and stay stable, so re-taking the
+ * page-wide snapshot restores resolution without changing any ref the caller
+ * has already been given.
+ */
+async function restoreRefRegistry(session: Session): Promise<void> {
+  await session.page.ariaSnapshot({ mode: 'ai' }).catch(() => {});
+}
+
+/**
+ * Prefixes the page state and clips the body to fit the caller's budget
+ * *including* that prefix. Budgeting the body alone would push the result over
+ * the tool-level cap, which then truncates the pagination note off the end and
+ * leaves a gap between pages.
+ */
+async function withHeader(
+  session: Session,
+  body: string,
+  maxChars: number,
+  offset?: number,
+): Promise<string> {
+  const header = `${await stateLine(session)}\n\n`;
+  const budget = Math.max(200, maxChars - header.length);
+  return header + clip(body, budget, offset ?? 0).text;
 }
 
 export async function query(
@@ -445,7 +523,9 @@ export async function query(
   const lines: string[] = [];
   for (let i = 0; i < shown; i++) {
     const match = locator.nth(i);
-    // A scoped ai-snapshot yields the element's page-global ref on its root line.
+    // A scoped ai-snapshot reports the element's page-global ref on its root
+    // line. Each one narrows the ref registry, so it is restored below —
+    // otherwise only the last match's ref would still resolve.
     const snap = await match.ariaSnapshot({ mode: 'ai', depth: 1 }).catch(() => '');
     const ref = rootRef(snap);
     const first = snap.split('\n')[0] ?? '';
@@ -456,6 +536,7 @@ export async function query(
       `[${i}] ${ref ? `ref=${ref} ` : ''}${summarizeLine(first) || '(no aria line)'} (${state})`,
     );
   }
+  await restoreRefRegistry(session);
   const more = count > shown ? `\n…${count - shown} more match(es); raise limit to see them.` : '';
   return `${count} match(es) for ${describeQuery(target)}:\n${lines.join('\n')}${more}`;
 }
@@ -475,8 +556,7 @@ export async function readText(
       ? locate(session, options.target)
       : session.page.locator('body');
   const text = await act(options.target, () => scoped.innerText());
-  const clipped = clip(text, options.maxChars, options.offset ?? 0);
-  return `${await stateLine(session)}\n\n${clipped.text}`;
+  return withHeader(session, text, options.maxChars, options.offset);
 }
 
 export async function screenshot(
@@ -511,14 +591,27 @@ export function consoleLog(
 ): string {
   const level = options.level ?? 'all';
   const cursor = session.consoleReadSeq.get(level) ?? 0;
+  const limit = options.limit ?? 50;
   let entries = session.console.filter((entry) => matchesLevel(entry.level, level));
   if (options.sinceLastCall) {
     entries = entries.filter((entry) => entry.seq > cursor);
   }
 
-  // Only a `sinceLastCall` read consumes its cursor, and only up to what it
-  // actually returned.
-  const newest = entries[entries.length - 1];
+  const suffix = level === 'all' ? '' : ` at level "${level}"`;
+  if (!entries.length) {
+    if (options.clear) session.console.length = 0;
+    return options.sinceLastCall
+      ? `No new console entries${suffix}.`
+      : `Console buffer is empty${suffix}.`;
+  }
+
+  // A `sinceLastCall` read drains oldest-first and consumes only what it
+  // returned, so a burst larger than `limit` is delivered across calls instead
+  // of having its oldest entries skipped. A full read shows the newest instead,
+  // and leaves the cursor alone.
+  const shown = options.sinceLastCall ? entries.slice(0, limit) : entries.slice(-limit);
+  const remaining = entries.length - shown.length;
+  const newest = shown[shown.length - 1];
   if (options.sinceLastCall && newest) {
     session.consoleReadSeq.set(level, newest.seq);
   }
@@ -528,20 +621,15 @@ export function consoleLog(
     session.consoleReadSeq.clear();
   }
 
-  if (!entries.length) {
-    return options.sinceLastCall
-      ? `No new console entries${level === 'all' ? '' : ` at level "${level}"`}.`
-      : `Console buffer is empty${level === 'all' ? '' : ` at level "${level}"`}.`;
-  }
-
-  const limit = options.limit ?? 50;
-  const shown = entries.slice(-limit);
-  const omitted = entries.length - shown.length;
   const lines = shown.map(
-    (entry) =>
-      `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
+    (entry) => `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
   );
-  return (omitted ? `…${omitted} older entries omitted\n` : '') + lines.join('\n');
+  const note = remaining
+    ? options.sinceLastCall
+      ? `\n…${remaining} more unread; call again for the next batch.`
+      : `\n…${remaining} older entries omitted; raise limit to see them.`
+    : '';
+  return lines.join('\n') + note;
 }
 
 function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
@@ -594,6 +682,7 @@ export async function requestDetail(
   id: number,
   part: 'summary' | 'headers' | 'requestBody' | 'responseBody',
   maxChars: number,
+  offset = 0,
 ): Promise<string> {
   const entry = session.findRequest(id);
   if (!entry) {
@@ -616,12 +705,12 @@ export async function requestDetail(
 
   if (part === 'requestBody') {
     if (!entry.postData) return `${formatNetworkLine(entry)}\n\n(no request body)`;
-    return `${formatNetworkLine(entry)}\n\n${clip(entry.postData, maxChars).text}`;
+    return `${formatNetworkLine(entry)}\n\n${clip(entry.postData, maxChars, offset).text}`;
   }
 
   if (part === 'responseBody') {
     const body = await resolveBody(entry);
-    return `${formatNetworkLine(entry)}\n\n${clip(body, maxChars).text}`;
+    return `${formatNetworkLine(entry)}\n\n${clip(body, maxChars, offset).text}`;
   }
 
   const timing = entry.request.timing();
@@ -717,9 +806,13 @@ function compile(
   scoped: boolean,
 ): (...args: unknown[]) => Promise<unknown> {
   const trimmed = expression.trim();
+  // A leading "(" alone is not enough: "(1+2)*4" is an expression, while
+  // "(el) => ..." and "(function(){})" are functions.
   const looksLikeFunction =
-    /^(async\s+)?(function\b|\()/.test(trimmed) ||
-    /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(trimmed);
+    /^(async\s+)?function\b/.test(trimmed) ||
+    /^(async\s+)?\([^)]*\)\s*=>/.test(trimmed) ||
+    /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(trimmed) ||
+    /^\(\s*(async\s+)?function\b/.test(trimmed);
   const build = (body: string) =>
     scoped ? new AsyncFunction('el', body) : new AsyncFunction(body);
 

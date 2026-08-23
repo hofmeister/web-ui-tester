@@ -43,7 +43,8 @@ export function clip(text: string, maxChars: number, offset = 0): ClipResult {
   if (start > 0) notes.push(`${start} chars before`);
   if (end < total) notes.push(`${total - end} chars after`);
   const suffix = notes.length
-    ? `\n…[showing chars ${start}-${end} of ${total}; ${notes.join(', ')}. Use offset to page.]`
+    ? `\n…[showing chars ${start}-${end} of ${total}; ${notes.join(', ')}.` +
+      (end < total ? ` Pass offset=${end} for the next section.]` : ']')
     : '';
   return { text: slice + suffix, truncated: notes.length > 0, totalChars: total };
 }

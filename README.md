@@ -108,7 +108,9 @@ web-ui-tester --port 7399
 claude mcp add --transport http web-ui-tester http://127.0.0.1:7399/mcp
 ```
 
-In this mode the browser sessions live in the long-running server rather than in a client-owned process, so they **survive client restarts and reconnects** — reconnect, pass the same `sessionId`, and the page is still there. Binds to `127.0.0.1` by default; `--host` changes that, and DNS-rebinding protection is on. `GET /health` reports session and connection counts.
+In this mode the browser sessions live in the long-running server rather than in a client-owned process, so they **survive client restarts and reconnects** — reconnect, pass the same `sessionId`, and the page is still there. `GET /health` reports session and connection counts.
+
+It binds to `127.0.0.1` by default, where DNS-rebinding protection is enabled. `--host` widens that, and the server warns when you do: there is no authentication, and anyone who can reach the port can drive a browser and run JavaScript through it. Put it behind a proxy or firewall.
 
 ## Configuration
 
