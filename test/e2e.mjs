@@ -420,6 +420,33 @@ async function regressionChecks(client, fixture, sessionId) {
   });
   check('a filtered clear keeps other levels', survived.text.includes('keep-me'), survived.text);
 
+  // A trailing semicolon used to break the expression form, yielding undefined.
+  const semi = await call(client, 'browser_evaluate', {
+    sessionId,
+    expression: 'document.title;',
+  });
+  check('a trailing semicolon still returns a value', semi.text.includes('Fixture'), semi.text);
+
+  // The empty-result branch of a filtered clear used to wipe the whole buffer.
+  await call(client, 'browser_evaluate', { sessionId, expression: 'console.warn("survivor"); 1' });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await call(client, 'browser_console', {
+    sessionId,
+    level: 'error',
+    clear: true,
+    sinceLastCall: true,
+  });
+  const stillThere = await call(client, 'browser_console', {
+    sessionId,
+    level: 'warning',
+    sinceLastCall: false,
+  });
+  check(
+    'clearing an empty filtered read spares other levels',
+    stillThere.text.includes('survivor'),
+    stillThere.text,
+  );
+
   // "(1+2)*4" was misread as a function literal and called.
   const parenExpr = await call(client, 'browser_evaluate', {
     sessionId,

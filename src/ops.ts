@@ -332,10 +332,17 @@ export async function type(
     await act(target, async () => {
       if (options.clear === false) {
         // Click alone leaves the caret where it landed, which inserts mid-value.
-        // Control+End reaches the end of the whole value; plain End stops at
-        // the end of the current line, which is wrong for a textarea.
+        // Moving it through the DOM works on every platform, unlike Control+End
+        // or End, which are not text-navigation bindings everywhere.
         await locator.click();
-        await locator.press('Control+End');
+        await locator
+          .evaluate((el: HTMLInputElement) => {
+            const end = el.value?.length;
+            if (typeof end === 'number' && el.setSelectionRange) {
+              el.setSelectionRange(end, end);
+            }
+          })
+          .catch(() => {});
         await locator.pressSequentially(text);
       } else {
         await locator.fill(text);
@@ -632,7 +639,7 @@ export function consoleLog(
 
   const suffix = level === 'all' ? '' : ` at level "${level}"`;
   if (!entries.length) {
-    if (options.clear) session.console.length = 0;
+    if (options.clear) clearLevel(session, level);
     return options.sinceLastCall
       ? `No new console entries${suffix}.`
       : `Console buffer is empty${suffix}.`;
@@ -649,13 +656,7 @@ export function consoleLog(
     session.consoleReadSeq.set(level, newest.seq);
   }
 
-  if (options.clear) {
-    // Clearing a filtered read must not discard unread entries of other levels.
-    const kept = session.console.filter((entry) => !matchesLevel(entry.level, level));
-    session.console.length = 0;
-    session.console.push(...kept);
-    session.consoleReadSeq.delete(level);
-  }
+  if (options.clear) clearLevel(session, level);
 
   const lines = shown.map(
     (entry) => `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
@@ -673,6 +674,14 @@ export function consoleLog(
  * arrives as "log", so an "info" filter that only matched "info" reported an
  * empty buffer while log lines sat in it.
  */
+/** Clears only the entries a filtered read covered, never other levels'. */
+function clearLevel(session: Session, level: 'error' | 'warning' | 'info' | 'all'): void {
+  const kept = session.console.filter((entry) => !matchesLevel(entry.level, level));
+  session.console.length = 0;
+  session.console.push(...kept);
+  session.consoleReadSeq.delete(level);
+}
+
 function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
   if (filter === 'all') return true;
   // Uncaught page errors belong with console errors — they are the same signal.
@@ -850,6 +859,10 @@ function compile(
   scoped: boolean,
 ): (...args: unknown[]) => Promise<unknown> {
   const trimmed = expression.trim();
+  // "document.title;" is still a bare expression; the trailing semicolon would
+  // otherwise break the expression build and fall through to a body with no
+  // return, silently yielding undefined.
+  const asExpression = trimmed.replace(/;+\s*$/, '');
   const build = (body: string) =>
     scoped ? new AsyncFunction('el', body) : new AsyncFunction(body);
 
@@ -858,7 +871,7 @@ function compile(
   // it, then call the result only if it actually turned out to be a function.
   try {
     return build(
-      `const __result = (${trimmed});` +
+      `const __result = (${asExpression});` +
         `return typeof __result === 'function' ? await __result(${scoped ? 'el' : ''}) : __result;`,
     );
   } catch {

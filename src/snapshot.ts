@@ -30,13 +30,22 @@ export interface ClipResult {
   totalChars: number;
 }
 
-/** Room kept for the paging note, so the whole result stays within budget. */
-const NOTE_RESERVE = 120;
+function pagingNote(start: number, end: number, total: number): string {
+  const notes: string[] = [];
+  if (start > 0) notes.push(`${start} chars before`);
+  if (end < total) notes.push(`${total - end} chars after`);
+  if (!notes.length) return '';
+  return (
+    `\n…[showing chars ${start}-${end} of ${total}; ${notes.join(', ')}.` +
+    (end < total ? ` Pass offset=${end} for the next section.]` : ']')
+  );
+}
 
 /**
  * Windows `text` to `maxChars` starting at `offset`, annotating what was cut.
  * The note counts against the budget: if the result overran, an outer cap would
- * trim the note itself off the end and the stated offset would be wrong.
+ * trim the note itself off the end and the stated offset would be wrong. Its
+ * length is measured rather than guessed, since large offsets make it longer.
  */
 export function clip(text: string, maxChars: number, offset = 0): ClipResult {
   const total = text.length;
@@ -44,17 +53,14 @@ export function clip(text: string, maxChars: number, offset = 0): ClipResult {
     return { text, truncated: false, totalChars: total };
   }
   const start = Math.min(offset, total);
-  const room = Math.max(50, maxChars - NOTE_RESERVE);
+  // The note can only shrink as the slice shrinks, so measuring it against the
+  // largest possible end gives a reserve that is never too small.
+  const reserve = pagingNote(start, Math.min(start + maxChars, total), total).length;
+  const room = Math.max(50, maxChars - reserve);
   const slice = text.slice(start, start + room);
   const end = start + slice.length;
-  const notes: string[] = [];
-  if (start > 0) notes.push(`${start} chars before`);
-  if (end < total) notes.push(`${total - end} chars after`);
-  const suffix = notes.length
-    ? `\n…[showing chars ${start}-${end} of ${total}; ${notes.join(', ')}.` +
-      (end < total ? ` Pass offset=${end} for the next section.]` : ']')
-    : '';
-  return { text: slice + suffix, truncated: notes.length > 0, totalChars: total };
+  const suffix = pagingNote(start, end, total);
+  return { text: slice + suffix, truncated: suffix.length > 0, totalChars: total };
 }
 
 export interface SnapshotOptions {
