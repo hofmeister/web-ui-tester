@@ -1,0 +1,46 @@
+{
+  "name": "web-ui-tester",
+  "version": "0.1.0",
+  "description": "MCP server for fast AI-driven web UI interaction and inspection with long-lived Playwright sessions",
+  "type": "module",
+  "bin": {
+    "web-ui-tester": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean --target node20",
+    "dev": "tsup src/index.ts --format esm --target node20 --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "test": "node test/e2e.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "playwright",
+    "browser",
+    "testing",
+    "ai",
+    "automation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.41",
+    "@ai-sdk/google": "^4.0.50",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^7.0.77",
+    "playwright": "^1.62.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}
