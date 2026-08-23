@@ -393,7 +393,9 @@ export class SessionManager {
     const session = new Session(id, options, context, page);
     // Must expire before an action times out; the action that opened the dialog
     // stays blocked until the dialog is answered.
-    session.dialogHoldMs = Math.max(1_000, Math.round(this.config.actionTimeoutMs * 0.5));
+    // Strictly below the action timeout: the action that opened the dialog is
+    // blocked until it is answered, and must not be the thing that fails.
+    session.dialogHoldMs = Math.max(200, Math.round(this.config.actionTimeoutMs * 0.5));
     this.sessions.set(id, session);
     this.startReaper();
     return session;

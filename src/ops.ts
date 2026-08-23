@@ -656,7 +656,14 @@ export function consoleLog(
     session.consoleReadSeq.set(level, newest.seq);
   }
 
-  if (options.clear) clearLevel(session, level, newest?.seq ?? Infinity);
+  if (options.clear) {
+    const oldest = shown[0];
+    clearLevel(
+      session,
+      level,
+      oldest && newest ? { fromSeq: oldest.seq, throughSeq: newest.seq } : undefined,
+    );
+  }
 
   const lines = shown.map(
     (entry) => `[${entry.level}] ${entry.text}${entry.location ? `  (${entry.location})` : ''}`,
@@ -681,14 +688,16 @@ export function consoleLog(
 function clearLevel(
   session: Session,
   level: 'error' | 'warning' | 'info' | 'all',
-  throughSeq = Infinity,
+  range?: { fromSeq: number; throughSeq: number },
 ): void {
-  const kept = session.console.filter(
-    (entry) => !matchesLevel(entry.level, level) || entry.seq > throughSeq,
-  );
+  const kept = session.console.filter((entry) => {
+    if (!matchesLevel(entry.level, level)) return true;
+    if (!range) return false;
+    return entry.seq < range.fromSeq || entry.seq > range.throughSeq;
+  });
   session.console.length = 0;
   session.console.push(...kept);
-  if (throughSeq === Infinity) session.consoleReadSeq.delete(level);
+  if (!range) session.consoleReadSeq.delete(level);
 }
 
 function matchesLevel(entryLevel: string, filter: 'error' | 'warning' | 'info' | 'all'): boolean {
@@ -767,12 +776,12 @@ export async function requestDetail(
 
   if (part === 'requestBody') {
     if (!entry.postData) return `${formatNetworkLine(entry)}\n\n(no request body)`;
-    return `${formatNetworkLine(entry)}\n\n${clip(entry.postData, maxChars, offset).text}`;
+    return withPrefix(`${formatNetworkLine(entry)}\n\n`, entry.postData, maxChars, offset);
   }
 
   if (part === 'responseBody') {
     const body = await resolveBody(entry);
-    return `${formatNetworkLine(entry)}\n\n${clip(body, maxChars, offset).text}`;
+    return withPrefix(`${formatNetworkLine(entry)}\n\n`, body, maxChars, offset);
   }
 
   const timing = entry.request.timing();
@@ -802,6 +811,16 @@ export async function requestDetail(
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Budgets a body with its prefix included. Clipping the body to the full budget
+ * and then prepending would overrun the tool cap, which re-clips and leaves a
+ * paging note whose offset is short by the prefix length.
+ */
+function withPrefix(prefix: string, body: string, maxChars: number, offset: number): string {
+  const budget = Math.max(200, maxChars - prefix.length);
+  return prefix + clip(body, budget, offset).text;
 }
 
 function fmtPhase(start: number, end: number): string {
@@ -841,15 +860,18 @@ export async function evaluate(
   const scoped = Boolean(target && (target.ref || target.css || target.role));
   const fn = compile(expression, scoped);
   try {
-    // page.evaluate takes no timeout option, so an endless loop or a promise
-    // that never settles would hang the tool call — and an agent loop with it.
-    const result = scoped
-      ? await locate(session, target!).evaluate(fn, undefined, { timeout: EVALUATE_TIMEOUT_MS })
-      : await withTimeout(
-          session.page.evaluate(fn),
-          EVALUATE_TIMEOUT_MS,
-          `Evaluation did not finish within ${EVALUATE_TIMEOUT_MS}ms — the expression may not terminate.`,
-        );
+    // Neither branch is bounded by Playwright: page.evaluate takes no timeout,
+    // and locator.evaluate's only bounds resolving the selector, not running
+    // the expression. Without this, "new Promise(() => {})" hangs the tool call
+    // and any agent loop with it.
+    const pending = scoped
+      ? locate(session, target!).evaluate(fn, undefined, { timeout: EVALUATE_TIMEOUT_MS })
+      : session.page.evaluate(fn);
+    const result = await withTimeout(
+      pending,
+      EVALUATE_TIMEOUT_MS,
+      `Evaluation did not finish within ${EVALUATE_TIMEOUT_MS}ms — the expression may not terminate.`,
+    );
     return clip(serialize(result), maxChars).text;
   } catch (error) {
     if (error instanceof Error && /Timeout/i.test(error.message)) {

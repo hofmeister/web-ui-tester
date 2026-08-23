@@ -427,6 +427,19 @@ async function regressionChecks(client, fixture, sessionId) {
   });
   check('a non-terminating evaluate times out', hang.isError, hang.text.slice(0, 200));
 
+  // locator.evaluate's timeout only bounds resolving the selector, not the
+  // expression, so the scoped branch needs its own bound.
+  const hangScoped = await call(client, 'browser_evaluate', {
+    sessionId,
+    css: '#name',
+    expression: 'el => new Promise(() => {})',
+  });
+  check(
+    'a non-terminating scoped evaluate times out',
+    hangScoped.isError,
+    hangScoped.text.slice(0, 200),
+  );
+
   // clear:true used to delete entries the same response reported as unread.
   await call(client, 'browser_console', { sessionId, level: 'error', sinceLastCall: true });
   await call(client, 'browser_evaluate', {
@@ -538,6 +551,23 @@ async function httpLeg(fixture) {
 
     const listed = await call(second, 'browser_list', {});
     check('browser session survived reconnect', listed.text.includes(sessionId), listed.text);
+
+    // A stale connection id must get the actionable error, not an opaque one.
+    const stale = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'no-such-connection',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    const staleBody = await stale.json();
+    check(
+      'a stale connection id is reported clearly',
+      staleBody.error === 'invalid_session' && /browser sessions outlive/.test(staleBody.message),
+      JSON.stringify(staleBody),
+    );
 
     const value = await call(second, 'browser_evaluate', {
       sessionId,

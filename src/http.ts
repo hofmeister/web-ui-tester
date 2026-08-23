@@ -7,8 +7,6 @@ import { buildServer } from './server.js';
 import type { SessionManager } from './session.js';
 
 const MCP_PATH = '/mcp';
-/** How long a client connection may sit unused before its transport is reclaimed. */
-const CONNECTION_IDLE_MS = 10 * 60 * 1000;
 
 export interface HttpServerHandle {
   close: () => Promise<void>;
@@ -36,9 +34,15 @@ export async function startHttpServer(
   // MCP clients commonly disconnect without sending DELETE, so an idle sweep is
   // what actually reclaims a connection's transport and McpServer. Browser
   // sessions live in the SessionManager and are deliberately untouched by this.
+  //
+  // lastSeen only advances on requests, and a client can hold an open stream
+  // for a long time without making one, so the window stays comfortably longer
+  // than a browser session's own idle timeout — reclaiming a connection early
+  // would break a client that is still there.
+  const connectionIdleMs = Math.max(config.idleTimeoutMs * 2, 60 * 60 * 1000);
   const sweeper = setInterval(() => {
     for (const [id, connection] of transports) {
-      if (Date.now() - connection.lastSeen > CONNECTION_IDLE_MS) {
+      if (Date.now() - connection.lastSeen > connectionIdleMs) {
         transports.delete(id);
         // Closes the transport too, and releases the McpServer with it.
         void connection.server.close().catch(() => {});
@@ -86,12 +90,18 @@ export async function startHttpServer(
       return;
     }
 
-    if (req.method !== 'POST') {
+    // A POST carrying an unknown id is a stale client, not a new connection:
+    // building a server for it would fail initialization and abandon both.
+    if (req.method !== 'POST' || typeof sessionId === 'string') {
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
           error: 'invalid_session',
-          message: 'Unknown or missing mcp-session-id; initialize with a POST first.',
+          message: sessionId
+            ? `Unknown mcp-session-id "${sessionId}"; the connection has expired. ` +
+              'Initialize a new one, then reuse your browser sessionId — browser ' +
+              'sessions outlive client connections.'
+            : 'Missing mcp-session-id; initialize with a POST first.',
         }),
       );
       return;
