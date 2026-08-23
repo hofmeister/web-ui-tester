@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Unsaved Changes Guard</title>
+  </head>
+  <body>
+    <h1>Guarded page</h1>
+    <p>This page warns before you leave, like an editor with unsaved changes.</p>
+    <button id="interact">Make a change</button>
+    <script>
+      window.addEventListener('beforeunload', (event) => {
+        event.preventDefault();
+        event.returnValue = '';
+      });
+      // Chrome only shows the prompt after genuine user interaction, which the
+      // test supplies by clicking this button through Playwright.
+    </script>
+  </body>
+</html>

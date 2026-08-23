@@ -47,8 +47,11 @@ function pagingNote(start: number, end: number, total: number): string {
  */
 export function clipHard(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  const note = `\n…[truncated ${text.length - maxChars} chars]`;
-  return text.slice(0, Math.max(0, maxChars - note.length)) + note;
+  // The note occupies part of the budget, so the count must include the
+  // characters it displaced, not just those past maxChars.
+  const width = String(text.length).length;
+  const room = Math.max(0, maxChars - `\n…[truncated  chars]`.length - width);
+  return text.slice(0, room) + `\n…[truncated ${text.length - room} chars]`;
 }
 
 /**

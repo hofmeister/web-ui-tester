@@ -504,6 +504,25 @@ async function regressionChecks(client, fixture, sessionId) {
     stillThere.text,
   );
 
+  // A beforeunload guard used to make a page unnavigable: the prompt was held,
+  // then dismissed, and dismissing beforeunload means "stay here".
+  await call(client, 'browser_navigate', { sessionId, url: '/guarded.html' });
+  // Chrome only raises the prompt after genuine interaction; without this click
+  // the test would pass whether or not the bug is present.
+  await call(client, 'browser_click', { sessionId, css: '#interact' });
+  const started = Date.now();
+  const leaving = await call(client, 'browser_navigate', { sessionId, url: '/app.html' });
+  check(
+    'a beforeunload guard does not block navigation',
+    !leaving.isError && leaving.text.includes('/app.html'),
+    leaving.text.slice(0, 200),
+  );
+  check(
+    'leaving a guarded page is not stalled',
+    Date.now() - started < 5000,
+    `took ${Date.now() - started}ms`,
+  );
+
   // "(1+2)*4" was misread as a function literal and called.
   const parenExpr = await call(client, 'browser_evaluate', {
     sessionId,

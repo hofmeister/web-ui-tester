@@ -38,12 +38,20 @@ export interface NetworkEntry {
   response?: Response;
 }
 
+export interface DialogRecord {
+  seq: number;
+  text: string;
+  /** "open" until answered, then how it was answered. */
+  how: string;
+}
+
 export interface PendingDialog {
   type: string;
   message: string;
   defaultValue: string;
   dialog: Dialog;
   timer: NodeJS.Timeout;
+  record: DialogRecord;
 }
 
 export interface SessionOptions {
@@ -77,6 +85,8 @@ export class Session {
   lastAnsweredDialog?: { text: string; how: string; at: number };
   /** Pre-armed answer for the next dialog, set by browser_handle_dialog. */
   dialogPolicy?: { accept: boolean; promptText?: string };
+  /** Per-dialog outcomes, so an action with several reports each correctly. */
+  readonly dialogLog: DialogRecord[] = [];
   /** How long an unanswered dialog is held; set from the action timeout. */
   dialogHoldMs = 3_000;
 
@@ -183,11 +193,13 @@ export class Session {
     return url;
   }
 
-  private pushConsole(entry: Omit<ConsoleEntry, 'seq'>): void {
-    this.console.push({ ...entry, seq: ++this.consoleSeq });
+  private pushConsole(entry: Omit<ConsoleEntry, 'seq'>): number {
+    const seq = ++this.consoleSeq;
+    this.console.push({ ...entry, seq });
     if (this.console.length > CONSOLE_BUFFER_MAX) {
       this.console.splice(0, this.console.length - CONSOLE_BUFFER_MAX);
     }
+    return seq;
   }
 
   private attach(page: Page): void {
@@ -267,11 +279,21 @@ export class Session {
     });
 
     page.on('dialog', (dialog) => {
-      this.pushConsole({
-        ts: Date.now(),
-        level: 'dialog',
-        text: `${dialog.type()}: ${dialog.message()}`,
-      });
+      const label = `${dialog.type()}: ${dialog.message()}`;
+      const seq = this.pushConsole({ ts: Date.now(), level: 'dialog', text: label });
+      const record = { seq, text: label, how: 'open' };
+      this.dialogLog.push(record);
+      if (this.dialogLog.length > 50) this.dialogLog.splice(0, this.dialogLog.length - 50);
+
+      // A beforeunload prompt only appears because a navigation was requested,
+      // and dismissing it means "stay here" — which would cancel that
+      // navigation and make any page with an unsaved-changes guard unreachable.
+      if (dialog.type() === 'beforeunload') {
+        record.how = 'accepted (beforeunload)';
+        this.lastAnsweredDialog = { text: label, how: record.how, at: Date.now() };
+        dialog.accept().catch(() => {});
+        return;
+      }
 
       // A dialog blocks the page until answered, so the action that opened it
       // cannot also answer it. A policy armed beforehand is the only way to
@@ -279,11 +301,8 @@ export class Session {
       const policy = this.dialogPolicy;
       if (policy) {
         this.dialogPolicy = undefined;
-        this.lastAnsweredDialog = {
-          text: `${dialog.type()}: ${dialog.message()}`,
-          how: policy.accept ? 'accepted' : 'dismissed',
-          at: Date.now(),
-        };
+        record.how = policy.accept ? 'accepted' : 'dismissed';
+        this.lastAnsweredDialog = { text: label, how: record.how, at: Date.now() };
         const answer = policy.accept ? dialog.accept(policy.promptText) : dialog.dismiss();
         answer.catch(() => {});
         return;
@@ -302,11 +321,8 @@ export class Session {
       const timer = setTimeout(() => {
         if (this.pendingDialog?.dialog === dialog) {
           this.pendingDialog = undefined;
-          this.lastAnsweredDialog = {
-            text: `${dialog.type()}: ${dialog.message()}`,
-            how: 'auto-dismissed',
-            at: Date.now(),
-          };
+          record.how = 'auto-dismissed';
+          this.lastAnsweredDialog = { text: label, how: record.how, at: Date.now() };
           dialog.dismiss().catch(() => {});
         }
       }, this.dialogHoldMs);
@@ -317,6 +333,7 @@ export class Session {
         defaultValue: dialog.defaultValue(),
         dialog,
         timer,
+        record,
       };
     });
   }

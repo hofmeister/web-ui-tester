@@ -1,7 +1,7 @@
 import type { Locator } from 'playwright';
 import type { Config } from './config.js';
 import type { NetworkEntry, Session, SessionManager, SessionOptions } from './session.js';
-import { ariaSnapshot, clip, rootRef, summarizeLine } from './snapshot.js';
+import { ariaSnapshot, clip, clipHard, rootRef, summarizeLine } from './snapshot.js';
 
 /** How much snapshot text an auto-attached "here's the page now" section gets. */
 const MINI_SNAPSHOT_CHARS = 4_000;
@@ -137,10 +137,10 @@ export async function miniSnapshot(session: Session): Promise<string> {
   const text = await ariaSnapshot(session.page).catch(
     (error) => `(snapshot unavailable: ${(error as Error).message})`,
   );
-  const clipped = clip(text, MINI_SNAPSHOT_CHARS);
-  return clipped.truncated
-    ? `${clipped.text}\n(Call browser_snapshot for the full tree.)`
-    : clipped.text;
+  // An auto-attached snapshot is not paged by the caller, so it is truncated
+  // rather than offered a continuation offset it cannot request here.
+  if (text.length <= MINI_SNAPSHOT_CHARS) return text;
+  return `${clipHard(text, MINI_SNAPSHOT_CHARS)}\n(Call browser_snapshot for the full tree.)`;
 }
 
 /** What an action caused — errors, requests, dialogs — so nothing goes unnoticed. */
@@ -157,19 +157,16 @@ function activitySince(session: Session, marks: { console: number; network: numb
   const lines = parts.length ? [`activity: ${parts.join('; ')}`] : [];
 
   // A dialog blocks the page, so it is answered quickly rather than left to
-  // stall the action. Say what happened either way.
-  const dialogs = session.console.filter(
-    (entry) => entry.seq > marks.console && entry.level === 'dialog',
-  );
-  for (const dialog of dialogs) {
-    if (session.pendingDialog) {
+  // stall the action. Each one carries its own outcome: reading a single
+  // "last dialog" field here would mislabel every dialog but the last.
+  for (const dialog of session.dialogLog.filter((entry) => entry.seq > marks.console)) {
+    if (dialog.how === 'open') {
       lines.push(`dialog open (${dialog.text}) — answer it with browser_handle_dialog`);
       continue;
     }
-    const how = session.lastAnsweredDialog?.how ?? 'auto-dismissed';
     lines.push(
-      `dialog ${how}: ${dialog.text}` +
-        (how === 'auto-dismissed'
+      `dialog ${dialog.how}: ${dialog.text}` +
+        (dialog.how === 'auto-dismissed'
           ? ' (call browser_handle_dialog beforehand to accept it instead)'
           : ''),
     );
@@ -187,12 +184,16 @@ async function withActivity(
   fn: () => Promise<string>,
 ): Promise<string> {
   const marks = session.marks();
-  const urlBefore = session.page.url();
+  // livePage(), not page: an action may legitimately leave the session without
+  // a live page (a script closed it), and reporting on that must not turn a
+  // successful action into an error.
+  const urlBefore = session.livePage()?.url();
   const summary = await fn();
   // Let same-tick navigations and XHRs register before reporting.
-  await session.page.waitForTimeout(120).catch(() => {});
-  const urlAfter = session.page.url();
-  const navigated = urlAfter !== urlBefore ? `\nnavigated to: ${urlAfter}` : '';
+  await session.livePage()?.waitForTimeout(120).catch(() => {});
+  const urlAfter = session.livePage()?.url();
+  const navigated =
+    urlAfter && urlAfter !== urlBefore ? `\nnavigated to: ${urlAfter}` : '';
   const notice = session.takeNotice();
   return (
     summary + navigated + activitySince(session, marks) + (notice ? `\nnote: ${notice}` : '')
@@ -444,7 +445,13 @@ export async function waitFor(
 }
 
 export async function goBack(session: Session): Promise<string> {
-  await act(undefined, () => session.page.goBack({ timeout: 15_000 }));
+  const response = await act(undefined, () => session.page.goBack({ timeout: 15_000 }));
+  if (!response) {
+    return [
+      'No previous page in this session\'s history — nothing to go back to.',
+      await stateLine(session),
+    ].join('\n');
+  }
   return [
     'went back',
     await stateLine(session),
@@ -473,6 +480,12 @@ export async function handleDialog(
   }
   clearTimeout(pending.timer);
   session.pendingDialog = undefined;
+  pending.record.how = accept ? 'accepted' : 'dismissed';
+  session.lastAnsweredDialog = {
+    text: pending.record.text,
+    how: pending.record.how,
+    at: Date.now(),
+  };
   if (accept) {
     await pending.dialog.accept(promptText);
     return `accepted ${pending.type}: ${pending.message}`;
@@ -785,12 +798,21 @@ export async function requestDetail(
   }
 
   if (part === 'headers') {
+    // Headers are fetched asynchronously as requests fly by, so the buffered
+    // copy may be empty. Re-read live rather than rendering "(none)", which
+    // would be indistinguishable from a request that genuinely had none.
+    const requestHeaders = await entry.request
+      .allHeaders()
+      .catch(() => entry.requestHeaders);
+    const responseHeaders = entry.response
+      ? await entry.response.allHeaders().catch(() => entry.responseHeaders)
+      : entry.responseHeaders;
     const body = [
       'request headers:',
-      formatHeaders(entry.requestHeaders),
+      formatHeaders(requestHeaders),
       '',
       'response headers:',
-      entry.responseHeaders ? formatHeaders(entry.responseHeaders) : '(none)',
+      entry.response ? formatHeaders(responseHeaders) : '(no response yet)',
     ].join('\n');
     return withPrefix(`${formatNetworkLine(entry)}\n\n`, body, maxChars, offset);
   }
@@ -849,9 +871,9 @@ function fmtPhase(start: number, end: number): string {
   return `${Math.round(end - start)}ms`;
 }
 
-function formatHeaders(headers: Record<string, string>): string {
-  const entries = Object.entries(headers);
-  if (!entries.length) return '(none)';
+function formatHeaders(headers: Record<string, string> | undefined): string {
+  const entries = Object.entries(headers ?? {});
+  if (!entries.length) return '(unavailable)';
   return entries.map(([key, value]) => `  ${key}: ${value}`).join('\n');
 }
 
@@ -893,7 +915,7 @@ export async function evaluate(
       EVALUATE_TIMEOUT_MS,
       `Evaluation did not finish within ${EVALUATE_TIMEOUT_MS}ms — the expression may not terminate.`,
     );
-    return clip(serialize(result), maxChars).text;
+    return clipHard(serialize(result), maxChars);
   } catch (error) {
     if (error instanceof Error && /Timeout/i.test(error.message)) {
       throw translateError(error, target);

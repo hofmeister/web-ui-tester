@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { parseModelSpec, type Config } from './config.js';
 import * as ops from './ops.js';
 import type { Session } from './session.js';
-import { clip } from './snapshot.js';
+import { clipHard } from './snapshot.js';
 
 /** Tool output inside the loop accumulates in context, so clip it harder. */
 const AGENT_TOOL_CHARS = 6_000;
@@ -68,9 +68,11 @@ function resolveModel(spec: string): { model: LanguageModel; label: string } {
 function buildTools(session: Session) {
   // Every step counts as use: the idle reaper only sees SessionManager.get() at
   // MCP call entry, so a long run would otherwise be reaped mid-flight.
+  // clipHard, not clip: the agent's tools take no offset, so a continuation
+  // offset would be advice it cannot act on.
   const clipped = (body: string) => {
     session.touch();
-    return clip(body, AGENT_TOOL_CHARS).text;
+    return clipHard(body, AGENT_TOOL_CHARS);
   };
   const targetShape = {
     ref: z.string().optional().describe('Element ref from a snapshot, e.g. "e12".'),
