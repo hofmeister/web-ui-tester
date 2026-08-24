@@ -77,7 +77,8 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
       title: 'Network log',
       description:
         'Lists network requests the session has made, with status, size, and duration. Each line ' +
-        'carries an #id for browser_request_detail. Filter by URL substring or by failure status.',
+        'carries an #id for browser_request_detail. WebSockets appear as WS entries with their ' +
+        'frame counts. Filter by URL substring or by failure status.',
       inputSchema: {
         sessionId: sessionIdSchema,
         filter: z.string().optional().describe('Only requests whose URL contains this substring.'),
@@ -109,14 +110,18 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
       title: 'Request detail',
       description:
         'Inspects one request from browser_network: headers, timing breakdown, request body, or ' +
-        'response body. Small text responses are cached, so they stay readable after navigation.',
+        'response body. Small text responses are cached, so they stay readable after navigation. ' +
+        'For a WebSocket entry, any part returns its frame stream.',
       inputSchema: {
         sessionId: sessionIdSchema,
         id: z.number().int().min(1).describe('The #id from browser_network.'),
         part: z
-          .enum(['summary', 'headers', 'requestBody', 'responseBody'])
+          .enum(['summary', 'headers', 'requestBody', 'responseBody', 'frames'])
           .optional()
-          .describe('Which part to return. Defaults to "summary".'),
+          .describe(
+            'Which part to return. Defaults to "summary". Use "frames" for WebSocket entries ' +
+              '(shown as WS in browser_network) to read the frame stream.',
+          ),
         maxChars: z.number().int().min(500).optional(),
         offset: z
           .number()
@@ -131,7 +136,7 @@ export function registerDiagnosticTools(server: McpServer, context: ToolContext)
       const a = args as unknown as {
         sessionId: string;
         id: number;
-        part?: 'summary' | 'headers' | 'requestBody' | 'responseBody';
+        part?: 'summary' | 'headers' | 'requestBody' | 'responseBody' | 'frames';
         maxChars?: number;
         offset?: number;
       };

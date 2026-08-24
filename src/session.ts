@@ -1,10 +1,17 @@
 import { randomBytes } from 'node:crypto';
-import type { Browser, BrowserContext, Dialog, Page, Request, Response } from 'playwright';
+import type { Browser, BrowserContext, Dialog, Page, Request, Response, WebSocket } from 'playwright';
 import { launchBrowser } from './browser.js';
 import type { Config } from './config.js';
 
 const CONSOLE_BUFFER_MAX = 500;
 const NETWORK_BUFFER_MAX = 300;
+/**
+ * Per-socket frame ring. A chatty socket would otherwise evict every HTTP
+ * request from the shared network buffer within seconds.
+ */
+const WS_FRAME_BUFFER_MAX = 100;
+/** Frames are held in memory for the session's life, so each one is capped. */
+const WS_FRAME_MAX_BYTES = 4 * 1024;
 /** Bodies at or below this size are cached eagerly so they survive navigation. */
 const BODY_CACHE_MAX_BYTES = 256 * 1024;
 
@@ -15,6 +22,26 @@ export interface ConsoleEntry {
   level: string;
   text: string;
   location?: string;
+}
+
+export interface WsFrame {
+  ts: number;
+  dir: 'sent' | 'received';
+  /** Binary frames arrive as Buffer; only their size is recorded. */
+  text?: string;
+  bytes?: number;
+  truncated?: boolean;
+}
+
+export interface WsRecord {
+  state: 'open' | 'closed' | 'error';
+  openedAt: number;
+  closedAt?: number;
+  frames: WsFrame[];
+  sent: number;
+  received: number;
+  /** Frames evicted by the ring, so the log can say so rather than lie. */
+  dropped: number;
 }
 
 export interface NetworkEntry {
@@ -34,8 +61,12 @@ export interface NetworkEntry {
   /** Populated eagerly for small text responses; response.body() dies on navigation. */
   cachedBody?: string;
   bodyNote?: string;
-  request: Request;
+  /** Absent for WebSockets: they are observed via the websocket event, which
+   *  carries no Request object. */
+  request?: Request;
   response?: Response;
+  /** Present only when resourceType is "websocket". */
+  ws?: WsRecord;
 }
 
 export interface DialogRecord {
@@ -193,6 +224,76 @@ export class Session {
     return url;
   }
 
+  private attachWebSocket(socket: WebSocket): void {
+    const record: WsRecord = {
+      state: 'open',
+      openedAt: Date.now(),
+      frames: [],
+      sent: 0,
+      received: 0,
+      dropped: 0,
+    };
+    const entry: NetworkEntry = {
+      id: this.nextRequestId++,
+      ts: record.openedAt,
+      method: 'GET',
+      // The handshake response is not exposed by Playwright, but a socket that
+      // reaches this event has completed it; 101 is the only status it can be.
+      status: 101,
+      statusText: 'Switching Protocols',
+      url: socket.url(),
+      resourceType: 'websocket',
+      requestHeaders: {},
+      ws: record,
+    };
+    this.pushNetwork(entry);
+
+    const pushFrame = (dir: 'sent' | 'received', payload: string | Buffer) => {
+      if (dir === 'sent') record.sent++;
+      else record.received++;
+      const frame: WsFrame = { ts: Date.now(), dir };
+      if (typeof payload === 'string') {
+        frame.bytes = Buffer.byteLength(payload);
+        frame.text = payload.slice(0, WS_FRAME_MAX_BYTES);
+        if (frame.text.length < payload.length) frame.truncated = true;
+      } else {
+        frame.bytes = payload.length;
+      }
+      record.frames.push(frame);
+      if (record.frames.length > WS_FRAME_BUFFER_MAX) {
+        record.dropped += record.frames.length - WS_FRAME_BUFFER_MAX;
+        record.frames.splice(0, record.frames.length - WS_FRAME_BUFFER_MAX);
+      }
+    };
+
+    socket.on('framesent', (frame) => pushFrame('sent', frame.payload));
+    socket.on('framereceived', (frame) => pushFrame('received', frame.payload));
+    socket.on('socketerror', (error) => {
+      record.state = 'error';
+      record.closedAt = Date.now();
+      entry.failure = error;
+      // A socket that errored never completed its handshake, so the optimistic
+      // 101 above would be a lie.
+      entry.status = undefined;
+      entry.statusText = undefined;
+      entry.durationMs = record.closedAt - record.openedAt;
+    });
+    socket.on('close', () => {
+      if (record.state === 'error') return;
+      record.state = 'closed';
+      record.closedAt = Date.now();
+      entry.durationMs = record.closedAt - record.openedAt;
+    });
+  }
+
+  /** Appends to the network ring, evicting oldest entries past the cap. */
+  private pushNetwork(entry: NetworkEntry): void {
+    this.network.push(entry);
+    if (this.network.length > NETWORK_BUFFER_MAX) {
+      this.network.splice(0, this.network.length - NETWORK_BUFFER_MAX);
+    }
+  }
+
   private pushConsole(entry: Omit<ConsoleEntry, 'seq'>): number {
     const seq = ++this.consoleSeq;
     this.console.push({ ...entry, seq });
@@ -247,10 +348,7 @@ export class Session {
           entry.requestHeaders = headers;
         })
         .catch(() => {});
-      this.network.push(entry);
-      if (this.network.length > NETWORK_BUFFER_MAX) {
-        this.network.splice(0, this.network.length - NETWORK_BUFFER_MAX);
-      }
+      this.pushNetwork(entry);
     });
 
     page.on('response', (response) => {
@@ -276,6 +374,13 @@ export class Session {
       entry.failure = request.failure()?.errorText ?? 'failed';
       const started = this.requestStarts.get(request);
       if (started !== undefined) entry.durationMs = Date.now() - started;
+    });
+
+    // WebSockets never surface as request/response/requestfailed events, so
+    // without this the entire data flow of a socket-driven app is invisible
+    // to browser_network — which reads as "WebSockets do not work".
+    page.on('websocket', (socket) => {
+      this.attachWebSocket(socket);
     });
 
     page.on('dialog', (dialog) => {
