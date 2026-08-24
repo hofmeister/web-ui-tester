@@ -816,15 +816,41 @@ export function networkLog(
 
 function formatNetworkLine(entry: NetworkEntry): string {
   const status = entry.failure ? `FAILED(${entry.failure})` : (entry.status ?? 'pending');
+  if (entry.ws) {
+    const { state, sent, received, dropped } = entry.ws;
+    const frames = `${sent} sent/${received} received${dropped ? `, ${dropped} evicted` : ''}`;
+    const duration = entry.durationMs !== undefined ? `, ${entry.durationMs}ms` : '';
+    return `#${entry.id} WS ${status} ${entry.url} (websocket, ${state}, ${frames}${duration})`;
+  }
   const size = entry.sizeBytes !== undefined ? `, ${entry.sizeBytes}B` : '';
   const duration = entry.durationMs !== undefined ? `, ${entry.durationMs}ms` : '';
   return `#${entry.id} ${entry.method} ${status} ${entry.url} (${entry.resourceType}${size}${duration})`;
 }
 
+function formatFrames(entry: NetworkEntry): string {
+  const record = entry.ws;
+  if (!record) return '';
+  if (!record.frames.length) {
+    return record.state === 'error'
+      ? '(no frames — the socket failed before the handshake completed)'
+      : '(no frames exchanged)';
+  }
+  const lines = record.frames.map((frame) => {
+    const arrow = frame.dir === 'sent' ? '->' : '<-';
+    const at = new Date(frame.ts).toISOString().slice(11, 23);
+    if (frame.text === undefined) return `${at} ${arrow} (binary, ${frame.bytes}B)`;
+    return `${at} ${arrow} ${frame.text}${frame.truncated ? ` …(${frame.bytes}B total)` : ''}`;
+  });
+  const note = record.dropped
+    ? `…${record.dropped} older frame(s) evicted; the newest ${record.frames.length} are kept\n`
+    : '';
+  return note + lines.join('\n');
+}
+
 export async function requestDetail(
   session: Session,
   id: number,
-  part: 'summary' | 'headers' | 'requestBody' | 'responseBody',
+  part: 'summary' | 'headers' | 'requestBody' | 'responseBody' | 'frames',
   maxChars: number,
   offset = 0,
 ): Promise<string> {
@@ -835,13 +861,50 @@ export async function requestDetail(
     );
   }
 
+  // A WebSocket has no request/response pair to inspect: its payload is the
+  // frame stream, so every part that would read a body reads frames instead.
+  if (entry.ws) {
+    if (part === 'headers') {
+      return withPrefix(
+        `${formatNetworkLine(entry)}\n\n`,
+        'Playwright does not expose the WebSocket handshake headers. Use ' +
+          'part="frames" to read the frame stream.',
+        maxChars,
+        offset,
+      );
+    }
+    if (part === 'summary') {
+      const record = entry.ws;
+      const summary = [
+        'resourceType: websocket',
+        `state: ${record.state}`,
+        entry.failure ? `failure: ${entry.failure}` : '',
+        `opened: ${new Date(record.openedAt).toISOString()}`,
+        record.closedAt ? `closed: ${new Date(record.closedAt).toISOString()}` : '',
+        `frames: ${record.sent} sent, ${record.received} received` +
+          (record.dropped ? `, ${record.dropped} evicted` : ''),
+        '',
+        'frames (newest last):',
+        formatFrames(entry),
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return withPrefix(`${formatNetworkLine(entry)}\n`, summary, maxChars, offset);
+    }
+    return withPrefix(`${formatNetworkLine(entry)}\n\n`, formatFrames(entry), maxChars, offset);
+  }
+
+  if (part === 'frames') {
+    return `${formatNetworkLine(entry)}\n\n(not a WebSocket — part="frames" applies only to websocket entries)`;
+  }
+
   if (part === 'headers') {
     // Headers are fetched asynchronously as requests fly by, so the buffered
     // copy may be empty. Re-read live rather than rendering "(none)", which
     // would be indistinguishable from a request that genuinely had none.
-    const requestHeaders = await entry.request
-      .allHeaders()
-      .catch(() => entry.requestHeaders);
+    const requestHeaders = entry.request
+      ? await entry.request.allHeaders().catch(() => entry.requestHeaders)
+      : entry.requestHeaders;
     const responseHeaders = entry.response
       ? await entry.response.allHeaders().catch(() => entry.responseHeaders)
       : entry.responseHeaders;
@@ -865,7 +928,7 @@ export async function requestDetail(
     return withPrefix(`${formatNetworkLine(entry)}\n\n`, body, maxChars, offset);
   }
 
-  const timing = entry.request.timing();
+  const timing = entry.request?.timing();
   const timingLines = timing
     ? [
         `  dns:      ${fmtPhase(timing.domainLookupStart, timing.domainLookupEnd)}`,

@@ -48,6 +48,15 @@
         .then((data) => console.info('fixture: api ok', data.status));
       fetch('/api/missing').catch(() => {});
 
+      // Seeded WebSocket traffic: one successful echo socket and one that can
+      // never connect, so the capture is exercised on both paths.
+      const socket = new WebSocket(`ws://${location.host}/socket`);
+      socket.addEventListener('open', () => socket.send('fixture: ping'));
+      socket.addEventListener('message', (event) => {
+        document.getElementById('result').dataset.ws = event.data;
+      });
+      new WebSocket('ws://127.0.0.1:1/nope');
+
       document.getElementById('signup').addEventListener('submit', (event) => {
         event.preventDefault();
         const name = document.getElementById('name').value;

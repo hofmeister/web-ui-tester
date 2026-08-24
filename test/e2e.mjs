@@ -191,6 +191,28 @@ async function stdioLeg(fixture) {
   });
   check('request_detail summary has timing', timing.text.includes('timing:'), timing.text);
 
+  // WebSockets never fire request/response events, so they are captured
+  // separately; without that the whole data flow of a socket app is invisible.
+  const sockets = await call(client, 'browser_network', { sessionId, filter: '/socket' });
+  check('network log lists the WebSocket', /WS 101 .*websocket/.test(sockets.text), sockets.text);
+  check('WebSocket line reports frame counts', /1 sent\/1 received/.test(sockets.text), sockets.text);
+
+  const socketId = /#(\d+)/.exec(sockets.text)?.[1];
+  const frames = await call(client, 'browser_request_detail', {
+    sessionId,
+    id: Number(socketId),
+    part: 'frames',
+  });
+  check('frames show the sent payload', frames.text.includes('-> fixture: ping'), frames.text);
+  check('frames show the echoed reply', frames.text.includes('<- echo: fixture: ping'), frames.text);
+
+  const failedSocket = await call(client, 'browser_network', { sessionId, filter: '/nope' });
+  check(
+    'a WebSocket that cannot connect is reported as failed',
+    /WS FAILED\(.*\)/.test(failedSocket.text),
+    failedSocket.text,
+  );
+
   const evaluated = await call(client, 'browser_evaluate', {
     sessionId,
     expression: 'document.querySelectorAll("input").length',
