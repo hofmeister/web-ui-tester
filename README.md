@@ -10,6 +10,22 @@ It also carries DevTools-grade diagnostics — console, network with response bo
 
 ## Quick start
 
+### As a Claude plugin
+
+```bash
+claude plugin marketplace add hofmeister/web-ui-tester
+claude plugin install web-ui-tester@web-ui-tester
+npx playwright@1.62.1 install chromium   # once, if Playwright's Chromium isn't installed yet
+```
+
+The plugin runs the server from the TypeScript source in this repository with your own `node` (22.18 or newer), and Claude Code installs its dependencies from `package-lock.json` when you install the plugin. It asks for four optional settings: a Gemini and an Anthropic API key (only for [`run_task`](#the-built-in-agent), kept in your system's secure credential store), the agent model, and whether the browser runs headless.
+
+Then ask Claude something like *"Open http://localhost:3000, sign up with a test account and tell me what breaks."*
+
+To try a working copy, run `claude --plugin-dir .` in the repository, and `claude plugin validate .` before you push.
+
+### Other MCP clients
+
 ```bash
 claude mcp add web-ui-tester -- npx -y web-ui-tester
 ```
@@ -169,8 +185,23 @@ npm run typecheck
 
 `npm test` runs the agent loop against a scripted mock model, then drives the built server as a real MCP client over both transports against a local fixture app — covering refs, stale-ref handling, diagnostics, session persistence across reconnects, and idle reaping. `npm run test:agent:live` additionally exercises `run_task` against a real provider, and skips itself when no key is set.
 
-CI runs the typecheck, build, and both suites on Node 20 and 22 for every push and pull request. The live agent test runs separately — on demand via the **Live agent test** workflow, and weekly — because it makes real API calls; it needs `GOOGLE_GENERATIVE_AI_API_KEY` or `ANTHROPIC_API_KEY` as a repository secret, and the scheduled run skips itself when neither is set.
+CI runs the typecheck, build, a start of the server from source, and both suites on Node 22 and 24 for every push and pull request. The live agent test runs separately — on demand via the **Live agent test** workflow, and weekly — because it makes real API calls; it needs `GOOGLE_GENERATIVE_AI_API_KEY` or `ANTHROPIC_API_KEY` as a repository secret, and the scheduled run skips itself when neither is set.
+
+## Privacy
+
+The server runs on your computer. It has no server of its own, collects no analytics or telemetry, and sends nothing to its author or to Anthropic.
+
+- **What it runs and fetches:** a local Chromium, through Playwright, which loads the pages you or Claude point it at — along with everything those pages load themselves — and runs JavaScript in them when `browser_evaluate` is called. Treat it like any browser you hand to someone else: it can reach whatever your computer can reach, including `localhost` and your intranet.
+- **What it sends to AI providers:** only `run_task` does. It sends the task, the page's accessibility snapshots, and the results of the agent's browser actions to the model provider you configured — Google's Gemini API (`generativelanguage.googleapis.com`) or Anthropic's API (`api.anthropic.com`) — with your own API key. Every other tool is local, and without a key `run_task` is off.
+- **What it stores:** nothing on disk. Browser sessions use fresh in-memory profiles; their cookies, storage, console and network logs live in memory and are discarded when a session is closed, idles out (30 minutes by default), or the server stops. API keys are kept by Claude Code in your system's secure credential store and held only in memory while the server runs.
+- **Third parties:** the sites you visit see an ordinary browser (User-Agent `AITester/1.0` by default). Google or Anthropic receive the `run_task` data above under their own API terms and privacy policies ([Google](https://policies.google.com/privacy), [Anthropic](https://www.anthropic.com/legal/privacy)). Tool results go back to Claude as part of your conversation.
+- **HTTP mode** (`--port`) has no authentication; see [HTTP mode](#http-mode). The plugin uses stdio and does not open a port.
+- **Contact:** open an issue at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues) for questions about privacy or security.
+
+## Support
+
+Report bugs and ask questions at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

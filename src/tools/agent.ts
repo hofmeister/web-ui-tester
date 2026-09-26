@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { formatRunResult, runTask } from '../agent.js';
-import { register, sessionIdSchema, text, type ToolContext } from './shared.js';
+import { formatRunResult, runTask } from '../agent.ts';
+import { register, sessionIdSchema, text, type ToolContext } from './shared.ts';
 
 /**
  * Declared as the tool's output schema, so the calling model receives validated

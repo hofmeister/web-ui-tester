@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { Config } from '../config.js';
-import { OpError } from '../ops.js';
-import type { SessionManager } from '../session.js';
-import { clipHard } from '../snapshot.js';
+import type { Config } from '../config.ts';
+import { OpError } from '../ops.ts';
+import type { SessionManager } from '../session.ts';
+import { clipHard } from '../snapshot.ts';
 
 export interface ToolContext {
   sessions: SessionManager;

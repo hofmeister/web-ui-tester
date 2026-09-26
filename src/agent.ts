@@ -2,10 +2,10 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateText, hasToolCall, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
-import { parseModelSpec, type Config } from './config.js';
-import * as ops from './ops.js';
-import type { Session } from './session.js';
-import { clipHard } from './snapshot.js';
+import { parseModelSpec, type Config } from './config.ts';
+import * as ops from './ops.ts';
+import type { Session } from './session.ts';
+import { clipHard } from './snapshot.ts';
 
 /** Tool output inside the loop accumulates in context, so clip it harder. */
 const AGENT_TOOL_CHARS = 6_000;

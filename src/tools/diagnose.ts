@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as ops from '../ops.js';
+import * as ops from '../ops.ts';
 import {
   budget,
   register,
@@ -8,7 +8,7 @@ import {
   targetShape,
   text,
   type ToolContext,
-} from './shared.js';
+} from './shared.ts';
 
 type TargetArgs = {
   sessionId: string;

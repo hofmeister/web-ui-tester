@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as ops from '../ops.js';
-import { register, sessionIdSchema, text, type ToolContext } from './shared.js';
+import * as ops from '../ops.ts';
+import { register, sessionIdSchema, text, type ToolContext } from './shared.ts';
 
 export function registerSessionTools(server: McpServer, context: ToolContext): void {
   register(

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { loadConfig } from './config.js';
-import { startHttpServer } from './http.js';
-import { buildServer } from './server.js';
-import { SessionManager } from './session.js';
+import { loadConfig } from './config.ts';
+import { startHttpServer } from './http.ts';
+import { buildServer } from './server.ts';
+import { SessionManager } from './session.ts';
 
 const VERSION = '0.1.0';
 

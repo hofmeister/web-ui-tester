@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "web-ui-tester",
+  "displayName": "Web UI Tester",
+  "version": "0.1.0",
+  "description": "Let Claude drive and inspect real web pages in long-lived Chromium sessions: accessibility-tree snapshots with clickable refs, console and network diagnostics, and a built-in agent that runs a task and reports what broke.",
+  "author": {
+    "name": "Henrik Hofmeister",
+    "url": "https://github.com/hofmeister"
+  },
+  "homepage": "https://github.com/hofmeister/web-ui-tester#readme",
+  "repository": "https://github.com/hofmeister/web-ui-tester",
+  "license": "MIT",
+  "keywords": ["browser", "playwright", "testing", "web", "qa", "debugging"],
+  "userConfig": {
+    "google_api_key": {
+      "type": "string",
+      "title": "Google Gemini API key (optional)",
+      "description": "Only used by run_task, the built-in agent, with a Gemini model (the default). Every other tool works without a key.",
+      "sensitive": true
+    },
+    "anthropic_api_key": {
+      "type": "string",
+      "title": "Anthropic API key (optional)",
+      "description": "Only used by run_task with an Anthropic model. Set the agent model to \"anthropic\" to use it.",
+      "sensitive": true
+    },
+    "agent_model": {
+      "type": "string",
+      "title": "Agent model",
+      "description": "Model for run_task, as provider or provider:modelId, e.g. google:gemini-flash-latest or anthropic.",
+      "default": "google:gemini-flash-lite-latest"
+    },
+    "headless": {
+      "type": "boolean",
+      "title": "Headless browser",
+      "description": "Run Chromium without a window. Turn off to watch the browser.",
+      "default": true
+    }
+  }
+}

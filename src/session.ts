@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { Browser, BrowserContext, Dialog, Page, Request, Response, WebSocket } from 'playwright';
-import { launchBrowser } from './browser.js';
-import type { Config } from './config.js';
+import { launchBrowser } from './browser.ts';
+import type { Config } from './config.ts';
 
 const CONSOLE_BUFFER_MAX = 500;
 const NETWORK_BUFFER_MAX = 300;
@@ -130,14 +130,14 @@ export class Session {
   private readonly attached = new WeakSet<Page>();
   private readonly requestStarts = new WeakMap<Request, number>();
 
-  constructor(
-    id: string,
-    options: SessionOptions,
-    readonly context: BrowserContext,
-    private activePage: Page,
-  ) {
+  readonly context: BrowserContext;
+  private activePage: Page;
+
+  constructor(id: string, options: SessionOptions, context: BrowserContext, activePage: Page) {
     this.id = id;
     this.options = options;
+    this.context = context;
+    this.activePage = activePage;
     this.attach(activePage);
     context.on('page', (page) => {
       this.activePage = page;
@@ -482,7 +482,11 @@ export class SessionManager {
   private readonly browsers = new Map<boolean, Promise<Browser>>();
   private reaper?: NodeJS.Timeout;
 
-  constructor(private readonly config: Config) {}
+  private readonly config: Config;
+
+  constructor(config: Config) {
+    this.config = config;
+  }
 
   private browser(headless: boolean): Promise<Browser> {
     const existing = this.browsers.get(headless);

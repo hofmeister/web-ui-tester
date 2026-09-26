@@ -1,11 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Config } from './config.js';
-import type { SessionManager } from './session.js';
-import { registerAgentTools } from './tools/agent.js';
-import { registerDiagnosticTools } from './tools/diagnose.js';
-import { registerInspectionTools } from './tools/inspect.js';
-import { registerInteractionTools } from './tools/interact.js';
-import { registerSessionTools } from './tools/session.js';
+import type { Config } from './config.ts';
+import type { SessionManager } from './session.ts';
+import { registerAgentTools } from './tools/agent.ts';
+import { registerDiagnosticTools } from './tools/diagnose.ts';
+import { registerInspectionTools } from './tools/inspect.ts';
+import { registerInteractionTools } from './tools/interact.ts';
+import { registerSessionTools } from './tools/session.ts';
 
 const INSTRUCTIONS = `Drive and inspect real web pages through long-lived browser sessions.
 

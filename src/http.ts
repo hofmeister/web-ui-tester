@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { Config } from './config.js';
-import { buildServer } from './server.js';
-import type { SessionManager } from './session.js';
+import type { Config } from './config.ts';
+import { buildServer } from './server.ts';
+import type { SessionManager } from './session.ts';
 
 const MCP_PATH = '/mcp';
 
