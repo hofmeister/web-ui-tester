@@ -11,6 +11,8 @@
   "homepage": "https://github.com/hofmeister/web-ui-tester#readme",
   "repository": "https://github.com/hofmeister/web-ui-tester",
   "license": "MIT",
+  "privacyPolicyUrl": "https://github.com/hofmeister/web-ui-tester#privacy",
+  "supportUrl": "https://github.com/hofmeister/web-ui-tester/issues",
   "keywords": [
     "browser",
     "playwright",

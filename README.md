@@ -15,7 +15,7 @@ It also carries DevTools-grade diagnostics — console, network with response bo
 ```bash
 claude plugin marketplace add hofmeister/web-ui-tester
 claude plugin install web-ui-tester@web-ui-tester
-npx playwright@1.62.1 install chromium   # once, if Playwright's Chromium isn't installed yet
+npx playwright@1.63.0 install chromium   # once, if Playwright's Chromium isn't installed yet
 ```
 
 The plugin runs the server from the TypeScript source in this repository with your own `node` (22.18 or newer), and Claude Code installs its dependencies from `package-lock.json` when you install the plugin. It asks for four optional settings: a Gemini and an Anthropic API key (only for [`run_task`](#the-built-in-agent), kept in your system's secure credential store), the agent model, and whether the browser runs headless.
@@ -57,6 +57,13 @@ Chromium comes from Playwright. If it isn't installed yet:
 ```bash
 npx playwright install chromium
 ```
+
+## Example prompts
+
+- "Open http://localhost:3000, sign up with a new test account, and tell me whether anything errors along the way — console, network or UI."
+- "Go to our staging checkout page, add the cheapest product to the cart, and check that the total matches the item price plus shipping."
+- "Why does the 'Save' button on /settings do nothing? Click it and look at the console, the network request and the button's computed styles."
+- "Log in to the admin as demo@example.com / demo-password and use `run_task` to check that every link in the sidebar opens a page without errors."
 
 ## How a session works
 
@@ -200,7 +207,7 @@ The server runs on your computer. It has no server of its own, collects no analy
 
 ## Support
 
-Report bugs and ask questions at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues).
+Report bugs and ask questions at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues). Report security vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
