@@ -32,9 +32,11 @@ jobs:
 
       # Chromium is a large download, so key the cache on the Playwright
       # version that pins the revision rather than on the lockfile as a whole.
+      # Read it from the lockfile: package.json only holds a range, which stays
+      # the same when an update moves Playwright (and its Chromium) forward.
       - name: Resolve Playwright version
         id: pw
-        run: echo "version=$(node -p "require('./package.json').dependencies.playwright.replace(/^\D+/, '')")" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright'].version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers
         id: browser-cache
