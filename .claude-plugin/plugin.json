@@ -11,7 +11,14 @@
   "homepage": "https://github.com/hofmeister/web-ui-tester#readme",
   "repository": "https://github.com/hofmeister/web-ui-tester",
   "license": "MIT",
-  "keywords": ["browser", "playwright", "testing", "web", "qa", "debugging"],
+  "keywords": [
+    "browser",
+    "playwright",
+    "testing",
+    "web",
+    "qa",
+    "debugging"
+  ],
   "userConfig": {
     "google_api_key": {
       "type": "string",
