@@ -1,0 +1,17 @@
+{
+  "name": "web-ui-tester",
+  "owner": {
+    "name": "Henrik Hofmeister",
+    "url": "https://github.com/hofmeister"
+  },
+  "metadata": {
+    "description": "Fast AI-driven web UI interaction and inspection for Claude."
+  },
+  "plugins": [
+    {
+      "name": "web-ui-tester",
+      "source": "./",
+      "description": "Drive and inspect real web pages in long-lived Chromium sessions, with DevTools-grade diagnostics."
+    }
+  ]
+}

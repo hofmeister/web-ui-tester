@@ -1,7 +1,7 @@
 import type { Locator } from 'playwright';
-import type { Config } from './config.js';
-import type { NetworkEntry, Session, SessionManager, SessionOptions } from './session.js';
-import { ariaSnapshot, clip, clipHard, rootRef, summarizeLine } from './snapshot.js';
+import type { Config } from './config.ts';
+import type { NetworkEntry, Session, SessionManager, SessionOptions } from './session.ts';
+import { ariaSnapshot, clip, clipHard, rootRef, summarizeLine } from './snapshot.ts';
 
 /** How much snapshot text an auto-attached "here's the page now" section gets. */
 const MINI_SNAPSHOT_CHARS = 4_000;

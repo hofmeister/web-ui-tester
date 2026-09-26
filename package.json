@@ -12,7 +12,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "scripts": {
     "build": "tsup src/index.ts src/agent.ts src/server.ts src/session.ts src/config.ts src/tools/agent.ts --format esm --clean --target node20",
@@ -47,5 +47,9 @@
     "@types/node": "^22.10.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hofmeister/web-ui-tester.git"
   }
 }

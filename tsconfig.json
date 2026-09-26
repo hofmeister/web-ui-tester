@@ -3,7 +3,10 @@
     "target": "es2022",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["es2023", "dom"],
+    "lib": [
+      "es2023",
+      "dom"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
@@ -11,7 +14,14 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

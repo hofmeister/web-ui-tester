@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "web-ui-tester": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/index.ts"],
+      "env": {
+        "GOOGLE_GENERATIVE_AI_API_KEY": "${user_config.google_api_key}",
+        "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
+        "WUT_MODEL": "${user_config.agent_model}",
+        "WUT_HEADLESS": "${user_config.headless}"
+      }
+    }
+  }
+}

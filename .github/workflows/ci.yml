@@ -19,8 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor declared in engines, and current LTS.
-        node: ['20', '22']
+        # The release line that holds the engines floor (22.18), and current LTS.
+        node: ['22', '24']
 
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +61,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The Claude plugin runs src/index.ts directly with Node's type stripping.
+      - name: Start from source
+        run: node src/index.ts --version
 
       - name: Agent loop tests
         run: npm run test:agent
