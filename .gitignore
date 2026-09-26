@@ -12,3 +12,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Claude Desktop extension builds
+bundles/

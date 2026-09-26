@@ -25,6 +25,18 @@ const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-haiku-4-5',
 };
 
+/**
+ * A setting from the environment, trimmed, or undefined when it is empty. Claude
+ * Desktop passes an optional extension setting the user left empty as its
+ * unsubstituted placeholder (`${user_config.google_api_key}`), so those count as
+ * empty too.
+ */
+export function setting(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]?.trim();
+  if (!value || /^\$\{[^}]*\}$/.test(value)) return undefined;
+  return value;
+}
+
 function num(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -38,14 +50,14 @@ function bool(value: string | undefined, fallback: boolean): boolean {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
-    userAgent: env.WUT_USER_AGENT?.trim() || DEFAULT_USER_AGENT,
-    headless: bool(env.WUT_HEADLESS, true),
-    idleTimeoutMs: num(env.WUT_IDLE_TIMEOUT_MS, 30 * 60 * 1000),
-    maxOutputChars: num(env.WUT_MAX_OUTPUT_CHARS, 15_000),
-    actionTimeoutMs: num(env.WUT_ACTION_TIMEOUT_MS, 5_000),
-    agentMaxSteps: num(env.WUT_AGENT_MAX_STEPS, 20),
-    model: env.WUT_MODEL?.trim() || DEFAULT_MODEL,
-    executablePath: env.WUT_EXECUTABLE_PATH?.trim() || undefined,
+    userAgent: setting(env, 'WUT_USER_AGENT') ?? DEFAULT_USER_AGENT,
+    headless: bool(setting(env, 'WUT_HEADLESS'), true),
+    idleTimeoutMs: num(setting(env, 'WUT_IDLE_TIMEOUT_MS'), 30 * 60 * 1000),
+    maxOutputChars: num(setting(env, 'WUT_MAX_OUTPUT_CHARS'), 15_000),
+    actionTimeoutMs: num(setting(env, 'WUT_ACTION_TIMEOUT_MS'), 5_000),
+    agentMaxSteps: num(setting(env, 'WUT_AGENT_MAX_STEPS'), 20),
+    model: setting(env, 'WUT_MODEL') ?? DEFAULT_MODEL,
+    executablePath: setting(env, 'WUT_EXECUTABLE_PATH'),
   };
 }
 

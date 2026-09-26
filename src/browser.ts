@@ -84,13 +84,25 @@ export async function launchBrowser(
     return await chromium.launch({ headless, args });
   } catch (error) {
     const fallback = findInstalledChromium(headless);
-    if (!fallback) {
-      throw new Error(
-        `Could not launch Chromium: ${(error as Error).message}\n` +
-          'Install it with "npx playwright install chromium", or point ' +
-          'WUT_EXECUTABLE_PATH at an existing Chromium binary.',
-      );
+    if (fallback) return chromium.launch({ headless, executablePath: fallback, args });
+
+    // No Playwright browser at all — the usual case for the Claude Desktop
+    // extension, which has no install step. Google Chrome or Microsoft Edge,
+    // installed the normal way, drive just as well.
+    for (const channel of SYSTEM_BROWSER_CHANNELS) {
+      try {
+        return await chromium.launch({ headless, channel, args });
+      } catch {
+        // not installed; try the next one
+      }
     }
-    return chromium.launch({ headless, executablePath: fallback, args });
+    throw new Error(
+      `Could not launch Chromium: ${(error as Error).message}\n` +
+        'Install Google Chrome or Microsoft Edge, run "npx playwright install chromium", ' +
+        'or point WUT_EXECUTABLE_PATH at an existing Chromium binary.',
+    );
   }
 }
+
+/** Installed browsers tried, in order, when Playwright has no Chromium of its own. */
+const SYSTEM_BROWSER_CHANNELS = ['chrome', 'msedge'] as const;

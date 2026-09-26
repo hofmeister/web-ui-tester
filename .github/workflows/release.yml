@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to raise for this release"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+
+permissions:
+  contents: write
+
+# One release at a time: two dispatches at once would both try to move master.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Verify version and run tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      # A dispatched release always comes off master, whatever ref the run was started from, and
+      # needs the tags to work out which version comes next.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'master' || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Work out the version being released
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            node scripts/version.mjs --bump "$BUMP" --write --github
+          else
+            pkg=$(node -e "console.log(require('./package.json').version)")
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$pkg" != "$tag" ]; then
+              echo "package.json version ($pkg) does not match tag ($tag)"; exit 1
+            fi
+            {
+              echo "version=$pkg"
+              echo "tag=$GITHUB_REF_NAME"
+            } >> "$GITHUB_OUTPUT"
+          fi
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+      # Everything passed, so record the release: the version bump lands on master and the tag
+      # points at that commit. A tag push releases the commit it already points at. Pushes made
+      # with GITHUB_TOKEN do not start another workflow run, so this tag does not re-trigger the
+      # release; the rest of this run publishes it.
+      - name: Commit the version and tag it
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists — release it by pushing the tag, or pick another bump"; exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if ! git diff --quiet -- package.json; then
+            git add package.json .claude-plugin/plugin.json src/index.ts
+            git commit -m "Release $TAG"
+            git push origin "HEAD:master"
+          fi
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
+      - name: The commit being released
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Summary
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: echo "Releasing $TAG from $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Build the Claude Desktop extension and GitHub Release
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Build the Claude Desktop extension
+        run: npm run bundle
+      - name: Release notes
+        run: |
+          cat > notes.md <<'EOF'
+          ## Install
+
+          **Claude Desktop:** download `web-ui-tester-${{ needs.check.outputs.version }}.mcpb` below and double-click it. It uses Google Chrome or Microsoft Edge if Playwright's Chromium isn't installed.
+
+          **Claude Code:** `claude plugin marketplace add hofmeister/web-ui-tester`, then `claude plugin install web-ui-tester@web-ui-tester`.
+
+          See the README for other MCP clients and the settings.
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.tag }}
+          body_path: notes.md
+          generate_release_notes: true
+          files: bundles/*.mcpb

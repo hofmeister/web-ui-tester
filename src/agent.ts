@@ -2,7 +2,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateText, hasToolCall, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
-import { parseModelSpec, type Config } from './config.ts';
+import { parseModelSpec, setting, type Config } from './config.ts';
 import * as ops from './ops.ts';
 import type { Session } from './session.ts';
 import { clipHard } from './snapshot.ts';
@@ -44,7 +44,8 @@ export interface RunTaskResult {
 function resolveModel(spec: string): { model: LanguageModel; label: string } {
   const { provider, modelId } = parseModelSpec(spec);
   if (provider === 'google') {
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const apiKey = setting(process.env, 'GOOGLE_GENERATIVE_AI_API_KEY');
+    if (!apiKey) {
       throw new Error(
         'GOOGLE_GENERATIVE_AI_API_KEY is not set. Set it to use Gemini, or select ' +
           'Anthropic with WUT_MODEL=anthropic (needs ANTHROPIC_API_KEY), or pass ' +
@@ -52,17 +53,18 @@ function resolveModel(spec: string): { model: LanguageModel; label: string } {
       );
     }
     return {
-      model: createGoogleGenerativeAI()(modelId),
+      model: createGoogleGenerativeAI({ apiKey })(modelId),
       label: `google:${modelId}`,
     };
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const apiKey = setting(process.env, 'ANTHROPIC_API_KEY');
+  if (!apiKey) {
     throw new Error(
       'ANTHROPIC_API_KEY is not set. Set it to use Anthropic, or select Gemini with ' +
         'WUT_MODEL=google (needs GOOGLE_GENERATIVE_AI_API_KEY).',
     );
   }
-  return { model: createAnthropic()(modelId), label: `anthropic:${modelId}` };
+  return { model: createAnthropic({ apiKey })(modelId), label: `anthropic:${modelId}` };
 }
 
 /**

@@ -26,13 +26,15 @@
       "type": "string",
       "title": "Google Gemini API key (optional)",
       "description": "Only used by run_task, the built-in agent, with a Gemini model (the default). Every other tool works without a key.",
-      "sensitive": true
+      "sensitive": true,
+      "default": ""
     },
     "anthropic_api_key": {
       "type": "string",
       "title": "Anthropic API key (optional)",
       "description": "Only used by run_task with an Anthropic model. Set the agent model to \"anthropic\" to use it.",
-      "sensitive": true
+      "sensitive": true,
+      "default": ""
     },
     "agent_model": {
       "type": "string",
