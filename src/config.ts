@@ -84,7 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     executablePath: setting(env, 'WUT_EXECUTABLE_PATH'),
     cdpUrl: setting(env, 'WUT_CDP_URL'),
     cdpPort: parsePort(setting(env, 'WUT_CDP_PORT')),
-    devtools: bool(setting(env, 'WUT_DEVTOOLS'), false),
+    devtools: bool(setting(env, 'WUT_DEVTOOLS'), true),
     devtoolsCommand: setting(env, 'WUT_DEVTOOLS_MCP_COMMAND'),
   };
 }

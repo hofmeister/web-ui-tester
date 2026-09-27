@@ -46,7 +46,8 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
           .optional()
           .describe(
             "Make chrome-devtools-mcp's tools (devtools.* in browser_list_tools) available by " +
-              'giving the browser a private DevTools port. Defaults to WUT_DEVTOOLS (off).',
+              'giving the browser a private DevTools port. Defaults to true (WUT_DEVTOOLS); ' +
+              'false launches into a browser without one.',
           ),
         tab: z
           .string()

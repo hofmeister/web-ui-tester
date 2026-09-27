@@ -91,6 +91,7 @@ export function registerAgentTools(server: McpServer, context: ToolContext): voi
         expectation: a.expectation,
         maxSteps: a.maxSteps,
         model: a.model,
+        bridge: context.sessions.bridge(session),
       });
       return {
         ...text(formatRunResult(result)),

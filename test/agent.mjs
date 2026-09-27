@@ -203,6 +203,34 @@ async function main() {
     ]), 'mock:test', { instruction: 'Click a bad ref.', maxSteps: 5 });
     check('run survives a failing tool call', withError.steps.length === 3, `${withError.steps.length} steps`);
     check('failure is reported honestly', withError.success === false, String(withError.success));
+
+    // The agent gets the page's WebMCP tools and chrome-devtools-mcp's, too.
+    const session4 = await sessions.create({ headless: true, devtools: true });
+    await session4.page.goto(`${fixture.origin}/webmcp.html`);
+    const bridge = sessions.bridge(session4);
+    const withTools = await driveSession(session4, scriptedModel([
+      { toolName: 'list_tools', input: { source: 'devtools' } },
+      { toolName: 'list_tools', input: { source: 'webmcp' } },
+      { toolName: 'tool_schema', input: { name: 'devtools.evaluate_script' } },
+      {
+        toolName: 'call_tool',
+        input: { name: 'devtools.evaluate_script', arguments_json: '{"function": "() => document.title"}' },
+      },
+      { toolName: 'call_tool', input: { name: 'webmcp.add_to_cart', arguments_json: '{"quantity": 3}' } },
+      { toolName: 'call_tool', input: { name: 'devtools.evaluate_script', arguments_json: 'not json' } },
+      { toolName: 'done', input: { success: true, summary: 'Used the extra tools.' } },
+    ]), 'mock:test', { instruction: 'Use the extra tools.', maxSteps: 12, bridge });
+    const stepResult = (index) => withTools.steps[index]?.result ?? '';
+    check('agent can list devtools tools', stepResult(0).includes('devtools.take_snapshot'), stepResult(0));
+    check('agent can read a tool schema', stepResult(2).includes('function'), stepResult(2));
+    check('agent can call a devtools tool on its tab', stepResult(3).includes('WebMCP shop'), stepResult(3));
+    if (stepResult(1).includes('does not expose WebMCP')) {
+      console.log('  skip agent WebMCP call: this Chromium predates WebMCP (needs Chrome 150+)');
+    } else {
+      check('agent sees the page\'s WebMCP tools', stepResult(1).includes('webmcp.add_to_cart'), stepResult(1));
+      check('agent can call a WebMCP tool', stepResult(4).includes('cart now holds 3'), stepResult(4));
+    }
+    check('bad arguments_json is explained to the agent', stepResult(5).includes('not valid JSON'), stepResult(5));
   } finally {
     await sessions.shutdown();
     await fixture.close();

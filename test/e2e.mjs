@@ -726,7 +726,8 @@ async function toolsLeg(fixture) {
   const idOf = (result) => /sessionId: (\S+)/.exec(result.text)?.[1];
 
   // --- WebMCP: read straight from the page, no port needed -------------------
-  const plain = idOf(await call(client, 'browser_start', { url: `${fixture.origin}/webmcp.html` }));
+  // devtools: false, so this also covers a browser without a DevTools port.
+  const plain = idOf(await call(client, 'browser_start', { devtools: false, url: `${fixture.origin}/webmcp.html` }));
   const listed = await call(client, 'browser_list_tools', { sessionId: plain, source: 'webmcp' });
   if (listed.text.includes('does not expose WebMCP')) {
     console.log('  skip WebMCP checks: this Chromium predates WebMCP (needs Chrome 150+)');
@@ -759,15 +760,15 @@ async function toolsLeg(fixture) {
   }
 
   const noDevtools = await call(client, 'browser_list_tools', { sessionId: plain, source: 'devtools' });
-  check('devtools tools explain how to enable them', noDevtools.text.includes('devtools: true'), noDevtools.text);
+  check('devtools: false explains why the tools are missing', noDevtools.text.includes('devtools: false'), noDevtools.text);
   const badName = await call(client, 'browser_call_tool', { sessionId: plain, name: 'click' });
   check('an unqualified tool name is a clear error', badName.isError && badName.text.includes('webmcp.<name>'), badName.text);
 
-  // --- chrome-devtools-mcp, run by this server ------------------------------
-  const startA = await call(client, 'browser_start', { devtools: true, url: `${fixture.origin}/app.html` });
+  // --- chrome-devtools-mcp, run by this server (on by default) --------------
+  const startA = await call(client, 'browser_start', { url: `${fixture.origin}/app.html` });
   const a = idOf(startA);
   check('devtools session says the tools are available', startA.text.includes('devtools.*'), startA.text);
-  const b = idOf(await call(client, 'browser_start', { devtools: true, url: `${fixture.origin}/app.html` }));
+  const b = idOf(await call(client, 'browser_start', { url: `${fixture.origin}/app.html` }));
 
   const devList = await call(client, 'browser_list_tools', { sessionId: a, source: 'devtools' });
   check('lists chrome-devtools-mcp tools', devList.text.includes('devtools.take_snapshot') && devList.text.includes('devtools.evaluate_script'), devList.text.slice(0, 500));

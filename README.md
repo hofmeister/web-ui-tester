@@ -149,6 +149,8 @@ findings (3):
 
 Findings come from two places, and the distinction matters. The agent calls `report_finding` as it goes — so a run that hits its step limit still returns everything it found up to that point. Separately, the harness records every console error, failed request, and dialog during the run and reports those **whether or not the agent mentions them**, marked `[observed by the harness]`. A model that misses a 500 or forgets to mention an exception can't hide it.
 
+The agent has the same [page and DevTools tools](#page-and-devtools-tools) as the caller, as `list_tools`, `tool_schema` and `call_tool`, so a cheap model can use a site's WebMCP tools or run a Lighthouse audit without any of it passing through the calling model's context.
+
 The same report is returned as `structuredContent` against a declared output schema, so a calling AI can branch on `findings[].severity` rather than parse text. A task can succeed and still have findings; `success` reflects whether the task was accomplished, not whether the page was clean.
 
 This is the one part that needs an API key. It defaults to Gemini Flash Lite for latency; Anthropic works too:
@@ -172,7 +174,7 @@ browser_call_tool    sessionId, name, arguments
 
 **`webmcp.*` — tools the site publishes.** Pages can offer their own tools through [WebMCP](https://github.com/webmachinelearning/webmcp): registered from script (`document.modelContext.registerTool(…)`) or declared on a form (`<form toolname="…" tooldescription="…">`). They're read from the page over the DevTools protocol on every call, so the list follows navigation and re-renders. The listing flags tools the site marks consequential or as returning untrusted content. It's the site's own code: treat its output as the site's word, and a consequential tool as one that can place orders or send messages. WebMCP needs Chrome 150 or newer; browsers this server launches have the feature switched on, and a Chrome you [attach to](#attach-to-a-chrome-that-is-already-running) needs `--enable-features=WebMCP`.
 
-**`devtools.*` — [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)'s tools**: performance traces and insights, Lighthouse audits, device and network emulation, heap snapshots, and more. The server runs chrome-devtools-mcp itself (it's installed as a dependency) against the session's browser, so nothing else needs configuring. Start the session with `browser_start devtools: true` — or set `WUT_DEVTOOLS=1` — which gives its browser a private DevTools port; sessions [attached over CDP](#chrome-devtools-protocol-cdp) or launched with `WUT_CDP_PORT` have one already. Calls land on the session's own tab: its `pageId` parameter is hidden and filled in for you. Element `uid`s for these tools come from `devtools.take_snapshot`, not from `browser_snapshot`'s refs.
+**`devtools.*` — [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)'s tools**: performance traces and insights, Lighthouse audits, device and network emulation, heap snapshots, and more. The server runs chrome-devtools-mcp itself (it's installed as a dependency) against the session's browser, so nothing else needs configuring. They're on by default: each launched browser gets a private DevTools port on `127.0.0.1`, at a random number, for chrome-devtools-mcp to connect to (`browser_start` reports it). `browser_start devtools: false`, or `WUT_DEVTOOLS=0` for every session, launches without one — and without these tools. Sessions [attached over CDP](#chrome-devtools-protocol-cdp) always have them. Calls land on the session's own tab: its `pageId` parameter is hidden and filled in for you. Element `uid`s for these tools come from `devtools.take_snapshot`, not from `browser_snapshot`'s refs.
 
 ## HTTP mode
 
@@ -220,7 +222,7 @@ claude mcp add web-ui-tester -e WUT_CDP_PORT=9222 -- npx -y web-ui-tester
 claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl http://127.0.0.1:9222
 ```
 
-If the port is taken, or a second browser is launched (headed and headless run separately), it gets a free port instead; `0` always picks a free one. The port is bound to `127.0.0.1`, but any local process can drive the browser through it, so leave it unset unless you need it.
+If the port is taken, or a second browser is launched (headed and headless run separately), it gets a free port instead; `0` always picks a free one. The port is bound to `127.0.0.1`, but any local process can drive the browser through it. (Launched browsers already get a random private port for the [`devtools.*` tools](#page-and-devtools-tools) unless `WUT_DEVTOOLS=0`; `WUT_CDP_PORT` just makes it predictable.)
 
 ## Configuration
 
@@ -238,7 +240,7 @@ If the port is taken, or a second browser is launched (headed and headless run s
 | `WUT_EXECUTABLE_PATH` | — | Explicit Chromium binary |
 | `WUT_CDP_URL` | — | Attach to this running Chrome over CDP instead of launching one |
 | `WUT_CDP_PORT` | — | Expose launched browsers' DevTools protocol on this local port (`0` = any free port) |
-| `WUT_DEVTOOLS` | `false` | Default for `browser_start`'s `devtools` option |
+| `WUT_DEVTOOLS` | `true` | Default for `browser_start`'s `devtools` option; `0` launches browsers without a DevTools port |
 | `WUT_DEVTOOLS_MCP_COMMAND` | installed copy | Command that starts chrome-devtools-mcp (the endpoint flags are appended), e.g. `npx -y chrome-devtools-mcp@latest` |
 | `PLAYWRIGHT_BROWSERS_PATH` | — | Where Playwright looks for browsers |
 
@@ -274,7 +276,7 @@ The server runs on your computer. It has no server of its own, collects no analy
 - **What it stores:** nothing on disk. Browser sessions use fresh in-memory profiles; their cookies, storage, console and network logs live in memory and are discarded when a session is closed, idles out (30 minutes by default), or the server stops. API keys are kept by Claude Code in your system's secure credential store and held only in memory while the server runs.
 - **Third parties:** the sites you visit see an ordinary browser (User-Agent `AITester/1.0` by default). Google or Anthropic receive the `run_task` data above under their own API terms and privacy policies ([Google](https://policies.google.com/privacy), [Anthropic](https://www.anthropic.com/legal/privacy)). Tool results go back to Claude as part of your conversation.
 - **CDP:** with `WUT_CDP_URL` set, sessions drive the Chrome you point them at, by default in its own profile — the sites see your cookies and logins, and anything the session does happens there. With `WUT_CDP_PORT` set, the launched browser accepts DevTools-protocol connections from any process on your computer. Both are off unless you set them; see [CDP](#chrome-devtools-protocol-cdp).
-- **Page and DevTools tools:** `webmcp.*` tools run code the site supplies, inside the page. `devtools.*` tools run chrome-devtools-mcp as a local child process with its usage statistics, CrUX lookups and update checks switched off; it sends nothing anywhere of its own accord.
+- **Page and DevTools tools:** `webmcp.*` tools run code the site supplies, inside the page. `devtools.*` tools run chrome-devtools-mcp as a local child process with its usage statistics, CrUX lookups and update checks switched off; it sends nothing anywhere of its own accord. For it, each launched browser listens on a random `127.0.0.1` DevTools port that any local process could also use; `WUT_DEVTOOLS=0` turns that off.
 - **HTTP mode** (`--port`) has no authentication; see [HTTP mode](#http-mode). The plugin uses stdio and does not open a port.
 - **Contact:** open an issue at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues) for questions about privacy or security.
 

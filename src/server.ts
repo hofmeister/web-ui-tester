@@ -26,7 +26,7 @@ browser_inspect_element (computed styles, box model).
 
 More tools: browser_list_tools shows what else can run against the page — tools the site publishes
 through WebMCP ("webmcp.*") and chrome-devtools-mcp's ("devtools.*": performance traces, Lighthouse,
-emulation; start the session with devtools: true). browser_tool_schema describes one,
+emulation). browser_tool_schema describes one,
 browser_call_tool runs it.
 
 For multi-step goals, run_task hands the session to a fast built-in agent that does the driving

@@ -36,7 +36,8 @@ Environment:
   WUT_EXECUTABLE_PATH   Explicit Chromium binary.
   WUT_CDP_URL / WUT_CDP_PORT
                         Same as --cdp-url / --cdp-port.
-  WUT_DEVTOOLS          Give sessions chrome-devtools-mcp's tools by default.
+  WUT_DEVTOOLS          Give sessions chrome-devtools-mcp's tools (default true;
+                        false keeps launched browsers without a DevTools port).
 
 See README.md for the full environment-variable table.
 `;
