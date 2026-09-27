@@ -22,7 +22,32 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
           .describe('User-Agent for this session. Defaults to AITester/1.0.'),
         viewportWidth: z.number().int().min(200).max(4000).optional(),
         viewportHeight: z.number().int().min(200).max(4000).optional(),
-        headless: z.boolean().optional().describe('Run headless. Defaults to true.'),
+        headless: z
+          .boolean()
+          .optional()
+          .describe('Run headless. Defaults to true. Ignored when attaching over CDP.'),
+        cdpUrl: z
+          .string()
+          .optional()
+          .describe(
+            'Attach to an already-running Chrome over the DevTools protocol instead of ' +
+              'launching one, e.g. "http://127.0.0.1:9222" (Chrome started with ' +
+              '--remote-debugging-port=9222). Defaults to WUT_CDP_URL when that is set.',
+          ),
+        useBrowserProfile: z
+          .boolean()
+          .optional()
+          .describe(
+            "With cdpUrl: drive the browser's own profile (its cookies, logins and tabs). " +
+              'Defaults to true; false uses a fresh isolated context inside that browser.',
+          ),
+        tab: z
+          .string()
+          .optional()
+          .describe(
+            "With the browser's profile: take over the open tab whose URL contains this, " +
+              'instead of opening a new tab. Closing the session leaves that tab open.',
+          ),
         baseUrl: z
           .string()
           .optional()
@@ -45,6 +70,9 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
         headless?: boolean;
         baseUrl?: string;
         model?: string;
+        cdpUrl?: string;
+        useBrowserProfile?: boolean;
+        tab?: string;
       };
       const { text: body } = await ops.startSession(context.sessions, context.config, {
         url: a.url,
@@ -52,6 +80,9 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
         headless: a.headless,
         baseUrl: a.baseUrl,
         model: a.model,
+        cdpUrl: a.cdpUrl,
+        useBrowserProfile: a.useBrowserProfile,
+        tab: a.tab,
         ...(a.viewportWidth || a.viewportHeight
           ? {
               viewport: {

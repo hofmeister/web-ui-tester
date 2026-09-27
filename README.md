@@ -102,7 +102,7 @@ Element-addressing tools also accept `css`, or `role` + `name`, when you already
 
 ## Tools
 
-**Session** — `browser_start` (options: `userAgent`, `viewportWidth`, `viewportHeight`, `headless`, `baseUrl`, `url`, `model`), `browser_list`, `browser_close`.
+**Session** — `browser_start` (options: `userAgent`, `viewportWidth`, `viewportHeight`, `headless`, `baseUrl`, `url`, `model`, and for [CDP](#chrome-devtools-protocol-cdp) `cdpUrl`, `useBrowserProfile`, `tab`), `browser_list`, `browser_close`.
 
 **Interaction** — `browser_navigate`, `browser_click`, `browser_type`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_scroll`, `browser_wait_for`, `browser_go_back`, `browser_handle_dialog`.
 
@@ -169,6 +169,43 @@ In this mode the browser sessions live in the long-running server rather than in
 
 It binds to `127.0.0.1` by default, where DNS-rebinding protection is enabled. `--host` widens that, and the server warns when you do: there is no authentication, and anyone who can reach the port can drive a browser and run JavaScript through it. Put it behind a proxy or firewall.
 
+## Chrome DevTools Protocol (CDP)
+
+CDP works in both directions.
+
+### Attach to a Chrome that is already running
+
+Point the server at a Chrome started with remote debugging, and sessions drive that browser instead of launching one:
+
+```bash
+# Chrome 136+ ignores --remote-debugging-port on your default profile, so give it its own directory
+google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-debug"
+
+claude mcp add web-ui-tester -e WUT_CDP_URL=http://127.0.0.1:9222 -- npx -y web-ui-tester
+```
+
+Or per session: `browser_start` with `cdpUrl: "http://127.0.0.1:9222"` (a `ws://…/devtools/browser/…` URL works too).
+
+By default an attached session uses **that browser's own profile** — its cookies and logins — in a new tab, and keeps the browser's own User-Agent and window size. It only ever acts on tabs it opened (or popups they open), never on the tabs you have open. Two options change that:
+
+- `tab: "<url substring>"` takes over an existing tab instead of opening one — handy for picking up a page you logged in to by hand. Closing the session leaves that tab open.
+- `useBrowserProfile: false` uses a fresh isolated context inside the attached browser, as a launched browser would.
+
+Closing a session closes only the tabs it opened; stopping the server disconnects without closing Chrome.
+
+### Expose the launched browser to other CDP clients
+
+Set `WUT_CDP_PORT` (or `--cdp-port`) and the browser the server launches listens for DevTools-protocol clients on that local port; `browser_start` and `browser_list` report the endpoint. Another MCP server, a Playwright script (`chromium.connectOverCDP`) or plain `curl http://127.0.0.1:9222/json/list` can then work on the same pages as web-ui-tester.
+
+MCP clients generally cannot add a server partway through a conversation, so give the port a fixed value and configure the other server up front — it connects when it is first used, by which time the browser is running:
+
+```bash
+claude mcp add web-ui-tester -e WUT_CDP_PORT=9222 -- npx -y web-ui-tester
+claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl http://127.0.0.1:9222
+```
+
+If the port is taken, or a second browser is launched (headed and headless run separately), it gets a free port instead; `0` always picks a free one. The port is bound to `127.0.0.1`, but any local process can drive the browser through it, so leave it unset unless you need it.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -183,9 +220,11 @@ It binds to `127.0.0.1` by default, where DNS-rebinding protection is enabled. `
 | `WUT_ACTION_TIMEOUT_MS` | `5000` | Timeout for a single element action |
 | `WUT_AGENT_MAX_STEPS` | `20` | Default step budget for `run_task` |
 | `WUT_EXECUTABLE_PATH` | — | Explicit Chromium binary |
+| `WUT_CDP_URL` | — | Attach to this running Chrome over CDP instead of launching one |
+| `WUT_CDP_PORT` | — | Expose launched browsers' DevTools protocol on this local port (`0` = any free port) |
 | `PLAYWRIGHT_BROWSERS_PATH` | — | Where Playwright looks for browsers |
 
-CLI flags: `--port`, `--host`, `--headless` / `--no-headless`, `--idle-timeout`, `--version`, `--help`.
+CLI flags: `--port`, `--host`, `--headless` / `--no-headless`, `--idle-timeout`, `--cdp-url`, `--cdp-port`, `--version`, `--help`.
 
 If Playwright's expected Chromium revision isn't installed but another one is, the server finds and uses it rather than failing — handy in prebuilt containers. `WUT_EXECUTABLE_PATH` overrides the search entirely.
 
@@ -216,6 +255,7 @@ The server runs on your computer. It has no server of its own, collects no analy
 - **What it sends to AI providers:** only `run_task` does. It sends the task, the page's accessibility snapshots, and the results of the agent's browser actions to the model provider you configured — Google's Gemini API (`generativelanguage.googleapis.com`) or Anthropic's API (`api.anthropic.com`) — with your own API key. Every other tool is local, and without a key `run_task` is off.
 - **What it stores:** nothing on disk. Browser sessions use fresh in-memory profiles; their cookies, storage, console and network logs live in memory and are discarded when a session is closed, idles out (30 minutes by default), or the server stops. API keys are kept by Claude Code in your system's secure credential store and held only in memory while the server runs.
 - **Third parties:** the sites you visit see an ordinary browser (User-Agent `AITester/1.0` by default). Google or Anthropic receive the `run_task` data above under their own API terms and privacy policies ([Google](https://policies.google.com/privacy), [Anthropic](https://www.anthropic.com/legal/privacy)). Tool results go back to Claude as part of your conversation.
+- **CDP:** with `WUT_CDP_URL` set, sessions drive the Chrome you point them at, by default in its own profile — the sites see your cookies and logins, and anything the session does happens there. With `WUT_CDP_PORT` set, the launched browser accepts DevTools-protocol connections from any process on your computer. Both are off unless you set them; see [CDP](#chrome-devtools-protocol-cdp).
 - **HTTP mode** (`--port`) has no authentication; see [HTTP mode](#http-mode). The plugin uses stdio and does not open a port.
 - **Contact:** open an issue at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues) for questions about privacy or security.
 

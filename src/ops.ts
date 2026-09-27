@@ -249,20 +249,43 @@ export async function startSession(
   config: Config,
   options: StartOptions,
 ): Promise<{ session: Session; text: string }> {
+  const cdpUrl = options.cdpUrl ?? config.cdpUrl;
+  // A real profile keeps its own identity and window size unless asked otherwise.
+  const shared = Boolean(cdpUrl) && (options.useBrowserProfile ?? true);
   const session = await sessions.create({
-    userAgent: options.userAgent ?? config.userAgent,
-    viewport: options.viewport ?? { width: 1280, height: 720 },
+    userAgent: shared ? options.userAgent : (options.userAgent ?? config.userAgent),
+    viewport: shared ? options.viewport : (options.viewport ?? { width: 1280, height: 720 }),
     headless: options.headless ?? config.headless,
     baseUrl: options.baseUrl,
     model: options.model,
+    cdpUrl,
+    useBrowserProfile: shared,
+    tab: options.tab,
   });
-
+  const { viewport } = session.options;
   const lines = [
     `sessionId: ${session.id}`,
-    `userAgent: ${session.options.userAgent}`,
-    `viewport: ${session.options.viewport.width}x${session.options.viewport.height}`,
-    `headless: ${session.options.headless}`,
+    `userAgent: ${session.options.userAgent ?? "(the browser's own)"}`,
+    `viewport: ${viewport ? `${viewport.width}x${viewport.height}` : "(the tab's own)"}`,
   ];
+  if (cdpUrl) {
+    lines.push(
+      `attached over CDP: ${session.cdpEndpoint}`,
+      shared
+        ? options.tab
+          ? `using the browser's own profile, driving the existing tab ${session.livePage()?.url()}`
+          : "using the browser's own profile (its cookies and logins) in a new tab"
+        : 'using an isolated context inside that browser',
+    );
+  } else {
+    lines.push(`headless: ${session.options.headless}`);
+    if (session.cdpEndpoint) {
+      lines.push(
+        `cdpEndpoint: ${session.cdpEndpoint} — other DevTools-protocol clients ` +
+          '(e.g. chrome-devtools-mcp --browserUrl, or Playwright connectOverCDP) can attach to this browser',
+      );
+    }
+  }
   if (session.options.baseUrl) lines.push(`baseUrl: ${session.options.baseUrl}`);
   lines.push(
     `The session stays alive for further tool calls and is closed after ` +
@@ -296,7 +319,9 @@ export function listSessions(sessions: SessionManager): string {
       // livePage(), not page: one session without a live page must not break
       // the listing for every other session.
       const url = session.livePage()?.url() || '(no open page)';
-      return `${session.id}  ${url}  (age ${age}s, idle ${idle}s, ua ${session.options.userAgent})`;
+      const ua = session.options.userAgent ?? "browser's own";
+      const cdp = session.cdpEndpoint ? `, cdp ${session.cdpEndpoint}` : '';
+      return `${session.id}  ${url}  (age ${age}s, idle ${idle}s, ua ${ua}${cdp})`;
     })
     .join('\n');
 }

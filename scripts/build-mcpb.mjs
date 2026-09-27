@@ -78,6 +78,8 @@ const manifest = {
         ANTHROPIC_API_KEY: "${user_config.anthropic_api_key}",
         WUT_MODEL: "${user_config.agent_model}",
         WUT_HEADLESS: "${user_config.headless}",
+        WUT_CDP_URL: "${user_config.cdp_url}",
+        WUT_CDP_PORT: "${user_config.cdp_port}",
       },
     },
   },
@@ -112,6 +114,22 @@ const manifest = {
       description: "Run the browser without a window. Turn off to watch it work.",
       required: false,
       default: true,
+    },
+    cdp_url: {
+      type: "string",
+      title: "Attach to Chrome over CDP (optional)",
+      description:
+        "DevTools endpoint of a Chrome you started with --remote-debugging-port, e.g. http://127.0.0.1:9222. Sessions then drive that browser instead of launching one.",
+      required: false,
+      default: "",
+    },
+    cdp_port: {
+      type: "string",
+      title: "Expose the browser over CDP (optional)",
+      description:
+        "Local port on which the launched browser accepts DevTools-protocol clients, such as chrome-devtools-mcp, e.g. 9222. Leave empty to keep it private.",
+      required: false,
+      default: "",
     },
   },
   compatibility: {

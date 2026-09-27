@@ -46,6 +46,7 @@ async function main() {
   try {
     await stdioLeg(fixture);
     await httpLeg(fixture);
+    await cdpLeg(fixture);
     await idleLeg(fixture);
   } finally {
     await fixture.close();
@@ -637,6 +638,82 @@ async function httpLeg(fixture) {
   } finally {
     child.kill('SIGTERM');
   }
+}
+
+function stdioClient(name, env) {
+  const client = new Client({ name, version: '1.0.0' });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [entry],
+    env: { ...process.env, ...env },
+    stderr: 'inherit',
+  });
+  return client.connect(transport).then(() => client);
+}
+
+async function cdpTabs(endpoint) {
+  const response = await fetch(`${endpoint}/json/list`);
+  return (await response.json()).filter((target) => target.type === 'page');
+}
+
+async function cdpLeg(fixture) {
+  section('CDP: expose and attach');
+  // The exposing server owns the browser; the attaching one drives it over CDP.
+  const owner = await stdioClient('e2e-cdp-owner', { WUT_CDP_PORT: '0' });
+  const start = await call(owner, 'browser_start', { url: `${fixture.origin}/app.html` });
+  const endpoint = /cdpEndpoint: (\S+)/.exec(start.text)?.[1];
+  check('browser_start reports the exposed cdpEndpoint', Boolean(endpoint), start.text);
+  if (!endpoint) {
+    await owner.close();
+    return;
+  }
+  const version = await fetch(`${endpoint}/json/version`).then((r) => r.json()).catch(() => ({}));
+  check('exposed endpoint speaks CDP', Boolean(version.webSocketDebuggerUrl), JSON.stringify(version));
+  const listed = await call(owner, 'browser_list', {});
+  check('browser_list shows the cdp endpoint', listed.text.includes(endpoint), listed.text);
+
+  const guest = await stdioClient('e2e-cdp-guest', { WUT_CDP_URL: endpoint });
+  const attached = await call(guest, 'browser_start', { url: `${fixture.origin}/app.html?cdp=1` });
+  const guestId = /sessionId: (\S+)/.exec(attached.text)?.[1];
+  check('attach over CDP opens a session', Boolean(guestId) && !attached.isError, attached.text);
+  check('attach reports the browser profile', attached.text.includes("browser's own profile"), attached.text);
+  const snap = await call(guest, 'browser_snapshot', { sessionId: guestId });
+  check('attached session can snapshot', snap.text.includes('[ref='), snap.text.slice(0, 300));
+  check(
+    'the attached tab is visible over CDP',
+    (await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+
+  const adopt = await call(guest, 'browser_start', { tab: 'cdp=1' });
+  const adoptId = /sessionId: (\S+)/.exec(adopt.text)?.[1];
+  check('tab: takes over an existing tab', Boolean(adoptId) && adopt.text.includes('existing tab'), adopt.text);
+  await call(guest, 'browser_close', { sessionId: adoptId });
+  check(
+    'closing an adopted tab session leaves the tab open',
+    (await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+  await call(guest, 'browser_close', { sessionId: guestId });
+  check(
+    'closing the session closes the tab it opened',
+    !(await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+
+  const missing = await call(guest, 'browser_start', { tab: 'no-such-tab' });
+  check('unknown tab is a clear error', missing.isError && missing.text.includes('Open tabs'), missing.text);
+
+  const isolated = await call(guest, 'browser_start', { useBrowserProfile: false });
+  check('isolated context over CDP', isolated.text.includes('isolated context'), isolated.text);
+
+  await guest.close();
+  // The guest disconnecting must not take the owner's browser down with it.
+  const still = await call(owner, 'browser_snapshot', { sessionId: /sessionId: (\S+)/.exec(start.text)?.[1] });
+  check('owner browser survives the guest disconnecting', !still.isError, still.text.slice(0, 300));
+  await owner.close();
+
+  const bad = await stdioClient('e2e-cdp-bad', { WUT_CDP_URL: 'http://127.0.0.1:1' });
+  const failed = await call(bad, 'browser_start', {});
+  check('unreachable CDP endpoint explains itself', failed.isError && failed.text.includes('--remote-debugging-port'), failed.text);
+  await bad.close();
 }
 
 async function idleLeg(fixture) {

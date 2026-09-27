@@ -15,6 +15,13 @@ export interface Config {
   model: string;
   /** Explicit Chromium binary, bypassing Playwright's revision lookup. */
   executablePath?: string;
+  /** Attach to this already-running Chrome over CDP instead of launching one. */
+  cdpUrl?: string;
+  /**
+   * Expose launched browsers' DevTools protocol on this local port (0 = any
+   * free port), so other CDP clients can drive the same browser.
+   */
+  cdpPort?: number;
 }
 
 export const DEFAULT_USER_AGENT = 'AITester/1.0';
@@ -43,6 +50,13 @@ function num(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** A TCP port, where 0 is allowed and means "pick a free one". */
+export function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : undefined;
+}
+
 function bool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return !/^(0|false|no)$/i.test(value.trim());
@@ -58,6 +72,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     agentMaxSteps: num(setting(env, 'WUT_AGENT_MAX_STEPS'), 20),
     model: setting(env, 'WUT_MODEL') ?? DEFAULT_MODEL,
     executablePath: setting(env, 'WUT_EXECUTABLE_PATH'),
+    cdpUrl: setting(env, 'WUT_CDP_URL'),
+    cdpPort: parsePort(setting(env, 'WUT_CDP_PORT')),
   };
 }
 

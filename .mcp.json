@@ -7,7 +7,9 @@
         "GOOGLE_GENERATIVE_AI_API_KEY": "${user_config.google_api_key}",
         "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
         "WUT_MODEL": "${user_config.agent_model}",
-        "WUT_HEADLESS": "${user_config.headless}"
+        "WUT_HEADLESS": "${user_config.headless}",
+        "WUT_CDP_URL": "${user_config.cdp_url}",
+        "WUT_CDP_PORT": "${user_config.cdp_port}"
       }
     }
   }
