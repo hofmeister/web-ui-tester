@@ -261,6 +261,7 @@ export async function startSession(
     cdpUrl,
     useBrowserProfile: shared,
     tab: options.tab,
+    devtools: options.devtools ?? config.devtools,
   });
   const { viewport } = session.options;
   const lines = [
@@ -282,9 +283,12 @@ export async function startSession(
     if (session.cdpEndpoint) {
       lines.push(
         `cdpEndpoint: ${session.cdpEndpoint} — other DevTools-protocol clients ` +
-          '(e.g. chrome-devtools-mcp --browserUrl, or Playwright connectOverCDP) can attach to this browser',
+          '(e.g. Playwright connectOverCDP) can attach to this browser',
       );
     }
+  }
+  if (session.cdpEndpoint) {
+    lines.push("chrome-devtools-mcp's tools are available: browser_list_tools shows them as devtools.*");
   }
   if (session.options.baseUrl) lines.push(`baseUrl: ${session.options.baseUrl}`);
   lines.push(

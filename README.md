@@ -102,7 +102,7 @@ Element-addressing tools also accept `css`, or `role` + `name`, when you already
 
 ## Tools
 
-**Session** — `browser_start` (options: `userAgent`, `viewportWidth`, `viewportHeight`, `headless`, `baseUrl`, `url`, `model`, and for [CDP](#chrome-devtools-protocol-cdp) `cdpUrl`, `useBrowserProfile`, `tab`), `browser_list`, `browser_close`.
+**Session** — `browser_start` (options: `userAgent`, `viewportWidth`, `viewportHeight`, `headless`, `baseUrl`, `url`, `model`, `devtools`, and for [CDP](#chrome-devtools-protocol-cdp) `cdpUrl`, `useBrowserProfile`, `tab`), `browser_list`, `browser_close`.
 
 **Interaction** — `browser_navigate`, `browser_click`, `browser_type`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_scroll`, `browser_wait_for`, `browser_go_back`, `browser_handle_dialog`.
 
@@ -113,6 +113,8 @@ Dialogs need one note. An `alert`/`confirm`/`prompt` blocks the page until it's 
 **Inspection** — `browser_snapshot` (scopeable by element, `depth`-limited, `interactiveOnly`, offset-paged), `browser_query` (find by role/name, text, or CSS — returns refs and state), `browser_read_text` (rendered text of the page or one subtree), `browser_screenshot` (available, but the tree is usually the better tool).
 
 **Diagnostics** — `browser_console` (messages plus uncaught errors with stacks), `browser_network` (statuses, sizes, timings), `browser_request_detail` (headers, timing breakdown, request and response bodies), `browser_evaluate` (run JS in the page), `browser_inspect_element` (computed styles, box model, form state).
+
+**More tools** — `browser_list_tools`, `browser_tool_schema`, `browser_call_tool`; see [below](#page-and-devtools-tools).
 
 Every result is capped to a character budget, and the large ones (`browser_snapshot`, `browser_read_text`, bodies) page with `offset` instead of truncating silently.
 
@@ -157,6 +159,20 @@ This is the one part that needs an API key. It defaults to Gemini Flash Lite for
 | Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` |
 
 Set `WUT_MODEL` to pick (`anthropic`, or `google:gemini-flash-latest`, or any `provider:modelId`). A session can override it via `browser_start`'s `model`, and a single call via `run_task`'s `model`. Every other tool works without a key.
+
+## Page and DevTools tools
+
+Three generic tools reach tools this server doesn't define itself. An MCP client can't pick up new tools partway through a conversation, so the AI discovers and calls them through these instead:
+
+```
+browser_list_tools   sessionId              → webmcp.* and devtools.* tools for this page
+browser_tool_schema  sessionId, name        → description + JSON input schema
+browser_call_tool    sessionId, name, arguments
+```
+
+**`webmcp.*` — tools the site publishes.** Pages can offer their own tools through [WebMCP](https://github.com/webmachinelearning/webmcp): registered from script (`document.modelContext.registerTool(…)`) or declared on a form (`<form toolname="…" tooldescription="…">`). They're read from the page over the DevTools protocol on every call, so the list follows navigation and re-renders. The listing flags tools the site marks consequential or as returning untrusted content. It's the site's own code: treat its output as the site's word, and a consequential tool as one that can place orders or send messages. WebMCP needs Chrome 150 or newer; browsers this server launches have the feature switched on, and a Chrome you [attach to](#attach-to-a-chrome-that-is-already-running) needs `--enable-features=WebMCP`.
+
+**`devtools.*` — [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)'s tools**: performance traces and insights, Lighthouse audits, device and network emulation, heap snapshots, and more. The server runs chrome-devtools-mcp itself (it's installed as a dependency) against the session's browser, so nothing else needs configuring. Start the session with `browser_start devtools: true` — or set `WUT_DEVTOOLS=1` — which gives its browser a private DevTools port; sessions [attached over CDP](#chrome-devtools-protocol-cdp) or launched with `WUT_CDP_PORT` have one already. Calls land on the session's own tab: its `pageId` parameter is hidden and filled in for you. Element `uid`s for these tools come from `devtools.take_snapshot`, not from `browser_snapshot`'s refs.
 
 ## HTTP mode
 
@@ -222,6 +238,8 @@ If the port is taken, or a second browser is launched (headed and headless run s
 | `WUT_EXECUTABLE_PATH` | — | Explicit Chromium binary |
 | `WUT_CDP_URL` | — | Attach to this running Chrome over CDP instead of launching one |
 | `WUT_CDP_PORT` | — | Expose launched browsers' DevTools protocol on this local port (`0` = any free port) |
+| `WUT_DEVTOOLS` | `false` | Default for `browser_start`'s `devtools` option |
+| `WUT_DEVTOOLS_MCP_COMMAND` | installed copy | Command that starts chrome-devtools-mcp (the endpoint flags are appended), e.g. `npx -y chrome-devtools-mcp@latest` |
 | `PLAYWRIGHT_BROWSERS_PATH` | — | Where Playwright looks for browsers |
 
 CLI flags: `--port`, `--host`, `--headless` / `--no-headless`, `--idle-timeout`, `--cdp-url`, `--cdp-port`, `--version`, `--help`.
@@ -256,6 +274,7 @@ The server runs on your computer. It has no server of its own, collects no analy
 - **What it stores:** nothing on disk. Browser sessions use fresh in-memory profiles; their cookies, storage, console and network logs live in memory and are discarded when a session is closed, idles out (30 minutes by default), or the server stops. API keys are kept by Claude Code in your system's secure credential store and held only in memory while the server runs.
 - **Third parties:** the sites you visit see an ordinary browser (User-Agent `AITester/1.0` by default). Google or Anthropic receive the `run_task` data above under their own API terms and privacy policies ([Google](https://policies.google.com/privacy), [Anthropic](https://www.anthropic.com/legal/privacy)). Tool results go back to Claude as part of your conversation.
 - **CDP:** with `WUT_CDP_URL` set, sessions drive the Chrome you point them at, by default in its own profile — the sites see your cookies and logins, and anything the session does happens there. With `WUT_CDP_PORT` set, the launched browser accepts DevTools-protocol connections from any process on your computer. Both are off unless you set them; see [CDP](#chrome-devtools-protocol-cdp).
+- **Page and DevTools tools:** `webmcp.*` tools run code the site supplies, inside the page. `devtools.*` tools run chrome-devtools-mcp as a local child process with its usage statistics, CrUX lookups and update checks switched off; it sends nothing anywhere of its own accord.
 - **HTTP mode** (`--port`) has no authentication; see [HTTP mode](#http-mode). The plugin uses stdio and does not open a port.
 - **Contact:** open an issue at [github.com/hofmeister/web-ui-tester/issues](https://github.com/hofmeister/web-ui-tester/issues) for questions about privacy or security.
 

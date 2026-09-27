@@ -22,6 +22,16 @@ export interface Config {
    * free port), so other CDP clients can drive the same browser.
    */
   cdpPort?: number;
+  /**
+   * Default for browser_start's devtools option: give launched browsers a
+   * private DevTools port so chrome-devtools-mcp's tools can reach them.
+   */
+  devtools: boolean;
+  /**
+   * How to start chrome-devtools-mcp; the endpoint flags are appended.
+   * Undefined runs the copy installed alongside this server.
+   */
+  devtoolsCommand?: string;
 }
 
 export const DEFAULT_USER_AGENT = 'AITester/1.0';
@@ -74,6 +84,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     executablePath: setting(env, 'WUT_EXECUTABLE_PATH'),
     cdpUrl: setting(env, 'WUT_CDP_URL'),
     cdpPort: parsePort(setting(env, 'WUT_CDP_PORT')),
+    devtools: bool(setting(env, 'WUT_DEVTOOLS'), false),
+    devtoolsCommand: setting(env, 'WUT_DEVTOOLS_MCP_COMMAND'),
   };
 }
 

@@ -91,7 +91,16 @@ export interface BrowserHandle {
 
 export async function launchBrowser(options: LaunchOptions): Promise<BrowserHandle> {
   const { headless, executablePath } = options;
-  const args = ['--disable-dev-shm-usage'];
+  const args = [
+    '--disable-dev-shm-usage',
+    // WebMCP lets pages publish tools (browser_list_tools reads them). Chrome
+    // keeps only the last --enable-features, so Playwright's own entry is
+    // repeated here rather than overridden.
+    `--enable-features=${[
+      ...(process.env.PLAYWRIGHT_LEGACY_SCREENSHOT ? [] : ['CDPScreenshotNewSurface']),
+      'WebMCP',
+    ].join(',')}`,
+  ];
   let cdpEndpoint: string | undefined;
   if (options.cdpPort !== undefined) {
     const port = await pickPort(options.cdpPort);

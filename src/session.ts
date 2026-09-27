@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { BrowserContext, Dialog, Page, Request, Response, WebSocket } from 'playwright';
 import { connectBrowser, launchBrowser, type BrowserHandle } from './browser.ts';
+import { DevtoolsBridge } from './devtools.ts';
 import type { Config } from './config.ts';
 
 const CONSOLE_BUFFER_MAX = 500;
@@ -102,6 +103,11 @@ export interface SessionOptions {
   useBrowserProfile?: boolean;
   /** With useBrowserProfile: take over the existing tab whose URL contains this. */
   tab?: string;
+  /**
+   * Launch into a browser with a private DevTools port, so chrome-devtools-mcp's
+   * tools can reach it through browser_call_tool.
+   */
+  devtools?: boolean;
 }
 
 const TEXTY_CONTENT_TYPE = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|.*\+json)/i;
@@ -542,6 +548,8 @@ export class SessionManager {
    * endpoint; contexts give sessions their isolation.
    */
   private readonly browsers = new Map<string, Promise<BrowserHandle>>();
+  /** One chrome-devtools-mcp child per browser endpoint, started on first use. */
+  private readonly bridges = new Map<string, DevtoolsBridge>();
   private reaper?: NodeJS.Timeout;
 
   private readonly config: Config;
@@ -551,7 +559,12 @@ export class SessionManager {
   }
 
   private browser(options: SessionOptions): Promise<BrowserHandle> {
-    const key = options.cdpUrl ? `cdp ${options.cdpUrl}` : `launch ${options.headless}`;
+    // A browser launched with a DevTools port is kept apart from one without,
+    // so asking for devtools never opens a port on everyone else's browser.
+    const exposed = this.config.cdpPort !== undefined || Boolean(options.devtools);
+    const key = options.cdpUrl
+      ? `cdp ${options.cdpUrl}`
+      : `launch ${options.headless}${exposed ? ' exposed' : ''}`;
     const existing = this.browsers.get(key);
     if (existing) return existing;
 
@@ -561,12 +574,15 @@ export class SessionManager {
     } else {
       // Headed and headless browsers cannot share one port; the second launched
       // gets a free one, and browser_start reports whichever it got.
-      const taken = [...this.browsers.keys()].some((other) => other.startsWith('launch '));
+      const taken = [...this.browsers.keys()].some((other) => other.endsWith(' exposed'));
       pending = launchBrowser({
         headless: options.headless,
         executablePath: this.config.executablePath,
-        cdpPort:
-          this.config.cdpPort === undefined ? undefined : taken ? 0 : this.config.cdpPort,
+        cdpPort: !exposed
+          ? undefined
+          : this.config.cdpPort === undefined || taken
+            ? 0
+            : this.config.cdpPort,
       });
     }
     this.browsers.set(key, pending);
@@ -631,6 +647,18 @@ export class SessionManager {
     return session;
   }
 
+  /** The chrome-devtools-mcp bridge for a session's browser, if it has an endpoint. */
+  bridge(session: Session): DevtoolsBridge | undefined {
+    const endpoint = session.cdpEndpoint;
+    if (!endpoint) return undefined;
+    let bridge = this.bridges.get(endpoint);
+    if (!bridge) {
+      bridge = new DevtoolsBridge(endpoint, this.config.devtoolsCommand);
+      this.bridges.set(endpoint, bridge);
+    }
+    return bridge;
+  }
+
   get(id: string): Session {
     const session = this.sessions.get(id);
     if (!session) {
@@ -675,6 +703,8 @@ export class SessionManager {
     if (this.reaper) clearInterval(this.reaper);
     this.reaper = undefined;
     await Promise.all(this.list().map((session) => session.close()));
+    await Promise.all([...this.bridges.values()].map((bridge) => bridge.close()));
+    this.bridges.clear();
     this.sessions.clear();
     for (const pending of this.browsers.values()) {
       // For a browser attached over CDP this only disconnects (and drops the

@@ -41,6 +41,13 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
             "With cdpUrl: drive the browser's own profile (its cookies, logins and tabs). " +
               'Defaults to true; false uses a fresh isolated context inside that browser.',
           ),
+        devtools: z
+          .boolean()
+          .optional()
+          .describe(
+            "Make chrome-devtools-mcp's tools (devtools.* in browser_list_tools) available by " +
+              'giving the browser a private DevTools port. Defaults to WUT_DEVTOOLS (off).',
+          ),
         tab: z
           .string()
           .optional()
@@ -73,6 +80,7 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
         cdpUrl?: string;
         useBrowserProfile?: boolean;
         tab?: string;
+        devtools?: boolean;
       };
       const { text: body } = await ops.startSession(context.sessions, context.config, {
         url: a.url,
@@ -83,6 +91,7 @@ export function registerSessionTools(server: McpServer, context: ToolContext): v
         cdpUrl: a.cdpUrl,
         useBrowserProfile: a.useBrowserProfile,
         tab: a.tab,
+        devtools: a.devtools,
         ...(a.viewportWidth || a.viewportHeight
           ? {
               viewport: {
