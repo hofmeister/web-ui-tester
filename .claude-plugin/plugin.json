@@ -47,6 +47,18 @@
       "title": "Headless browser",
       "description": "Run Chromium without a window. Turn off to watch the browser.",
       "default": true
+    },
+    "cdp_url": {
+      "type": "string",
+      "title": "Attach to Chrome over CDP (optional)",
+      "description": "DevTools endpoint of a Chrome you started with --remote-debugging-port, e.g. http://127.0.0.1:9222. Sessions then drive that browser instead of launching one.",
+      "default": ""
+    },
+    "cdp_port": {
+      "type": "string",
+      "title": "Expose the browser over CDP (optional)",
+      "description": "Local port on which the launched browser accepts DevTools-protocol clients, such as chrome-devtools-mcp, e.g. 9222. Leave empty to keep it private.",
+      "default": ""
     }
   }
 }

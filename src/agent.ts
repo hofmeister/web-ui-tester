@@ -2,7 +2,10 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateText, hasToolCall, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseModelSpec, setting, type Config } from './config.ts';
+import type { DevtoolsBridge } from './devtools.ts';
+import { callExternalTool, externalToolSchema, listExternalTools } from './external.ts';
 import * as ops from './ops.ts';
 import type { Session } from './session.ts';
 import { clipHard } from './snapshot.ts';
@@ -20,6 +23,7 @@ How to work:
 - Prefer targeted tools over full snapshots: query finds elements by role/name/text, read_text reads rendered copy. Reach for a full snapshot only when you need to see the page structure.
 - When something looks broken, check console and network before concluding. They usually name the real failure.
 - Verify before you report. Read the resulting page rather than assuming an action worked.
+- Beyond your own tools, list_tools shows tools the site publishes through WebMCP (webmcp.*) and DevTools tools such as performance traces, Lighthouse audits and emulation (devtools.*). Check a tool's schema with tool_schema, then run it with call_tool. A webmcp tool marked CONSEQUENTIAL can take real actions — use it only when the task calls for exactly that.
 
 Reporting is the point of the run:
 - Call report_finding the moment you notice anything wrong or surprising — do not save it for the end. A run that stops early keeps everything already reported.
@@ -81,7 +85,11 @@ export interface Finding {
   source: 'agent' | 'observed';
 }
 
-function buildTools(session: Session, findings: Omit<Finding, 'source'>[]) {
+function buildTools(
+  session: Session,
+  findings: Omit<Finding, 'source'>[],
+  bridge: DevtoolsBridge | undefined,
+) {
   // Every step counts as use: the idle reaper only sees SessionManager.get() at
   // MCP call entry, so a long run would otherwise be reaped mid-flight.
   // clipHard, not clip: the agent's tools take no offset, so a continuation
@@ -226,6 +234,48 @@ function buildTools(session: Session, findings: Omit<Finding, 'source'>[]) {
       execute: async (a) => clipped(await ops.inspectElement(session, asTarget(a))),
     }),
 
+    list_tools: tool({
+      description:
+        'List tools beyond yours: webmcp.* tools the site publishes (they change as the page ' +
+        'changes) and devtools.* tools (performance traces, Lighthouse, emulation, heap snapshots).',
+      inputSchema: z.object({
+        source: z.enum(['all', 'webmcp', 'devtools']).optional(),
+      }),
+      execute: async ({ source }) => clipped(await listExternalTools(session, bridge, source)),
+    }),
+
+    tool_schema: tool({
+      description: 'Description and JSON input schema of one tool from list_tools, e.g. "webmcp.search".',
+      inputSchema: z.object({ name: z.string() }),
+      execute: async ({ name }) => clipped(await externalToolSchema(session, bridge, name)),
+    }),
+
+    call_tool: tool({
+      description:
+        'Run a tool from list_tools. Pass its arguments as a JSON object in arguments_json, ' +
+        'matching tool_schema, e.g. {"quantity": 2}.',
+      // A JSON string rather than an open object: small models, and Gemini's
+      // schema support, handle free-form object parameters poorly.
+      inputSchema: z.object({
+        name: z.string(),
+        arguments_json: z.string().optional().describe('The tool\'s arguments as a JSON object.'),
+      }),
+      execute: async ({ name, arguments_json }) => {
+        let input: Record<string, unknown> = {};
+        if (arguments_json?.trim()) {
+          try {
+            input = JSON.parse(arguments_json);
+          } catch (error) {
+            return clipped(`arguments_json is not valid JSON: ${(error as Error).message}`);
+          }
+          if (!input || typeof input !== 'object' || Array.isArray(input)) {
+            return clipped('arguments_json must be a JSON object, e.g. {"q": "shoes"}.');
+          }
+        }
+        return clipped(flatten(await callExternalTool(session, bridge, name, input)));
+      },
+    }),
+
     report_finding: tool({
       description:
         'Record something worth reporting the moment you notice it — a broken control, a wrong ' +
@@ -275,7 +325,14 @@ function buildTools(session: Session, findings: Omit<Finding, 'source'>[]) {
 export async function runTask(
   session: Session,
   config: Config,
-  options: { instruction: string; expectation?: string; maxSteps?: number; model?: string },
+  options: {
+    instruction: string;
+    expectation?: string;
+    maxSteps?: number;
+    model?: string;
+    /** The session's chrome-devtools-mcp bridge, for the devtools.* tools. */
+    bridge?: DevtoolsBridge;
+  },
 ): Promise<RunTaskResult> {
   const spec = options.model ?? session.options.model ?? config.model;
   const { model, label } = resolveModel(spec);
@@ -283,6 +340,7 @@ export async function runTask(
     instruction: options.instruction,
     expectation: options.expectation,
     maxSteps: options.maxSteps ?? config.agentMaxSteps,
+    bridge: options.bridge,
   });
 }
 
@@ -291,13 +349,13 @@ export async function driveSession(
   session: Session,
   model: LanguageModel,
   label: string,
-  options: { instruction: string; expectation?: string; maxSteps: number },
+  options: { instruction: string; expectation?: string; maxSteps: number; bridge?: DevtoolsBridge },
 ): Promise<RunTaskResult> {
   const maxSteps = options.maxSteps;
   // Collected as the run goes, so a run that hits the step limit still returns
   // everything it reported along the way.
   const reported: Omit<Finding, 'source'>[] = [];
-  const tools = buildTools(session, reported);
+  const tools = buildTools(session, reported, options.bridge);
 
   const marks = session.marks();
   const opening = await ops
@@ -479,4 +537,12 @@ export function formatRunResult(result: RunTaskResult): string {
   if (result.totalTokens) lines.push(`tokens: ${result.totalTokens}`);
 
   return lines.join('\n');
+}
+
+/** A tool result as the text the agent loop works in; images are only named. */
+function flatten(result: CallToolResult): string {
+  const body = result.content
+    .map((block) => (block.type === 'text' ? block.text : `[${block.type}${'mimeType' in block ? ` ${block.mimeType}` : ''} omitted]`))
+    .join('\n');
+  return result.isError ? `Error: ${body}` : body;
 }

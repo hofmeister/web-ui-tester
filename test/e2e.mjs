@@ -46,6 +46,8 @@ async function main() {
   try {
     await stdioLeg(fixture);
     await httpLeg(fixture);
+    await cdpLeg(fixture);
+    await toolsLeg(fixture);
     await idleLeg(fixture);
   } finally {
     await fixture.close();
@@ -69,6 +71,7 @@ async function stdioLeg(fixture) {
   const { tools } = await client.listTools();
   const names = tools.map((tool) => tool.name).sort();
   const expected = [
+    'browser_call_tool',
     'browser_click',
     'browser_close',
     'browser_console',
@@ -78,6 +81,7 @@ async function stdioLeg(fixture) {
     'browser_hover',
     'browser_inspect_element',
     'browser_list',
+    'browser_list_tools',
     'browser_navigate',
     'browser_network',
     'browser_press_key',
@@ -89,6 +93,7 @@ async function stdioLeg(fixture) {
     'browser_select_option',
     'browser_snapshot',
     'browser_start',
+    'browser_tool_schema',
     'browser_type',
     'browser_wait_for',
     'run_task',
@@ -637,6 +642,156 @@ async function httpLeg(fixture) {
   } finally {
     child.kill('SIGTERM');
   }
+}
+
+function stdioClient(name, env) {
+  const client = new Client({ name, version: '1.0.0' });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [entry],
+    env: { ...process.env, ...env },
+    stderr: 'inherit',
+  });
+  return client.connect(transport).then(() => client);
+}
+
+async function cdpTabs(endpoint) {
+  const response = await fetch(`${endpoint}/json/list`);
+  return (await response.json()).filter((target) => target.type === 'page');
+}
+
+async function cdpLeg(fixture) {
+  section('CDP: expose and attach');
+  // The exposing server owns the browser; the attaching one drives it over CDP.
+  const owner = await stdioClient('e2e-cdp-owner', { WUT_CDP_PORT: '0' });
+  const start = await call(owner, 'browser_start', { url: `${fixture.origin}/app.html` });
+  const endpoint = /cdpEndpoint: (\S+)/.exec(start.text)?.[1];
+  check('browser_start reports the exposed cdpEndpoint', Boolean(endpoint), start.text);
+  if (!endpoint) {
+    await owner.close();
+    return;
+  }
+  const version = await fetch(`${endpoint}/json/version`).then((r) => r.json()).catch(() => ({}));
+  check('exposed endpoint speaks CDP', Boolean(version.webSocketDebuggerUrl), JSON.stringify(version));
+  const listed = await call(owner, 'browser_list', {});
+  check('browser_list shows the cdp endpoint', listed.text.includes(endpoint), listed.text);
+
+  const guest = await stdioClient('e2e-cdp-guest', { WUT_CDP_URL: endpoint });
+  const attached = await call(guest, 'browser_start', { url: `${fixture.origin}/app.html?cdp=1` });
+  const guestId = /sessionId: (\S+)/.exec(attached.text)?.[1];
+  check('attach over CDP opens a session', Boolean(guestId) && !attached.isError, attached.text);
+  check('attach reports the browser profile', attached.text.includes("browser's own profile"), attached.text);
+  const snap = await call(guest, 'browser_snapshot', { sessionId: guestId });
+  check('attached session can snapshot', snap.text.includes('[ref='), snap.text.slice(0, 300));
+  check(
+    'the attached tab is visible over CDP',
+    (await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+
+  const adopt = await call(guest, 'browser_start', { tab: 'cdp=1' });
+  const adoptId = /sessionId: (\S+)/.exec(adopt.text)?.[1];
+  check('tab: takes over an existing tab', Boolean(adoptId) && adopt.text.includes('existing tab'), adopt.text);
+  await call(guest, 'browser_close', { sessionId: adoptId });
+  check(
+    'closing an adopted tab session leaves the tab open',
+    (await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+  await call(guest, 'browser_close', { sessionId: guestId });
+  check(
+    'closing the session closes the tab it opened',
+    !(await cdpTabs(endpoint)).some((tab) => tab.url.includes('cdp=1')),
+  );
+
+  const missing = await call(guest, 'browser_start', { tab: 'no-such-tab' });
+  check('unknown tab is a clear error', missing.isError && missing.text.includes('Open tabs'), missing.text);
+
+  const isolated = await call(guest, 'browser_start', { useBrowserProfile: false });
+  check('isolated context over CDP', isolated.text.includes('isolated context'), isolated.text);
+
+  await guest.close();
+  // The guest disconnecting must not take the owner's browser down with it.
+  const still = await call(owner, 'browser_snapshot', { sessionId: /sessionId: (\S+)/.exec(start.text)?.[1] });
+  check('owner browser survives the guest disconnecting', !still.isError, still.text.slice(0, 300));
+  await owner.close();
+
+  const bad = await stdioClient('e2e-cdp-bad', { WUT_CDP_URL: 'http://127.0.0.1:1' });
+  const failed = await call(bad, 'browser_start', {});
+  check('unreachable CDP endpoint explains itself', failed.isError && failed.text.includes('--remote-debugging-port'), failed.text);
+  await bad.close();
+}
+
+async function toolsLeg(fixture) {
+  section('page and DevTools tools (WebMCP, chrome-devtools-mcp)');
+  const client = await stdioClient('e2e-tools', {});
+  const idOf = (result) => /sessionId: (\S+)/.exec(result.text)?.[1];
+
+  // --- WebMCP: read straight from the page, no port needed -------------------
+  // devtools: false, so this also covers a browser without a DevTools port.
+  const plain = idOf(await call(client, 'browser_start', { devtools: false, url: `${fixture.origin}/webmcp.html` }));
+  const listed = await call(client, 'browser_list_tools', { sessionId: plain, source: 'webmcp' });
+  if (listed.text.includes('does not expose WebMCP')) {
+    console.log('  skip WebMCP checks: this Chromium predates WebMCP (needs Chrome 150+)');
+  } else {
+    check('lists an imperatively registered WebMCP tool', listed.text.includes('webmcp.add_to_cart'), listed.text);
+    check('lists a declarative form tool', listed.text.includes('webmcp.search_catalogue'), listed.text);
+    check('flags a consequential tool', /add_to_cart.*CONSEQUENTIAL/.test(listed.text), listed.text);
+
+    const schema = await call(client, 'browser_tool_schema', { sessionId: plain, name: 'webmcp.add_to_cart' });
+    check('WebMCP schema carries the input schema', schema.text.includes('"quantity"'), schema.text);
+
+    const added = await call(client, 'browser_call_tool', {
+      sessionId: plain,
+      name: 'webmcp.add_to_cart',
+      arguments: { quantity: 2 },
+    });
+    check('calls a WebMCP tool', !added.isError && added.text.includes('cart now holds 2'), added.text);
+    const cart = await call(client, 'browser_read_text', { sessionId: plain, css: '#cart' });
+    check('the WebMCP call acted on the page', cart.text.includes('Cart: 2'), cart.text);
+
+    const broken = await call(client, 'browser_call_tool', { sessionId: plain, name: 'webmcp.broken' });
+    check('a throwing WebMCP tool is an error with its message', broken.isError && broken.text.includes('out of stock'), broken.text);
+
+    // The list is live: a page without tools has none.
+    await call(client, 'browser_navigate', { sessionId: plain, url: `${fixture.origin}/app.html` });
+    const after = await call(client, 'browser_list_tools', { sessionId: plain, source: 'webmcp' });
+    check('WebMCP tools follow navigation', after.text.includes('None right now'), after.text);
+    const gone = await call(client, 'browser_call_tool', { sessionId: plain, name: 'webmcp.add_to_cart', arguments: { quantity: 1 } });
+    check('calling a tool the page no longer has is a clear error', gone.isError && gone.text.includes('no WebMCP tool'), gone.text);
+  }
+
+  const noDevtools = await call(client, 'browser_list_tools', { sessionId: plain, source: 'devtools' });
+  check('devtools: false explains why the tools are missing', noDevtools.text.includes('devtools: false'), noDevtools.text);
+  const badName = await call(client, 'browser_call_tool', { sessionId: plain, name: 'click' });
+  check('an unqualified tool name is a clear error', badName.isError && badName.text.includes('webmcp.<name>'), badName.text);
+
+  // --- chrome-devtools-mcp, run by this server (on by default) --------------
+  const startA = await call(client, 'browser_start', { url: `${fixture.origin}/app.html` });
+  const a = idOf(startA);
+  check('devtools session says the tools are available', startA.text.includes('devtools.*'), startA.text);
+  const b = idOf(await call(client, 'browser_start', { url: `${fixture.origin}/app.html` }));
+
+  const devList = await call(client, 'browser_list_tools', { sessionId: a, source: 'devtools' });
+  check('lists chrome-devtools-mcp tools', devList.text.includes('devtools.take_snapshot') && devList.text.includes('devtools.evaluate_script'), devList.text.slice(0, 500));
+  const clickSchema = await call(client, 'browser_tool_schema', { sessionId: a, name: 'devtools.click' });
+  check('devtools schema hides pageId', clickSchema.text.includes('"uid"') && !/"pageId":\s*\{/.test(clickSchema.text), clickSchema.text);
+
+  // Same URL in two sessions: each call must land on its own session's tab.
+  await call(client, 'browser_evaluate', { sessionId: a, expression: 'document.title = "tab A"' });
+  await call(client, 'browser_evaluate', { sessionId: b, expression: 'document.title = "tab B"' });
+  const titleOf = (sessionId) =>
+    call(client, 'browser_call_tool', {
+      sessionId,
+      name: 'devtools.evaluate_script',
+      arguments: { function: '() => document.title' },
+    });
+  const ta = await titleOf(a);
+  const tb = await titleOf(b);
+  check('devtools call runs on session A\'s tab', ta.text.includes('tab A') && !ta.text.includes('tab B'), ta.text);
+  check('devtools call runs on session B\'s tab', tb.text.includes('tab B') && !tb.text.includes('tab A'), tb.text);
+  const restored = await call(client, 'browser_evaluate', { sessionId: a, expression: 'document.title' });
+  check('page title is restored after locating the tab', restored.text.includes('tab A') && !restored.text.includes('wut-'), restored.text);
+
+  await client.close();
 }
 
 async function idleLeg(fixture) {

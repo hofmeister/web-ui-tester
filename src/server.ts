@@ -3,6 +3,7 @@ import type { Config } from './config.ts';
 import type { SessionManager } from './session.ts';
 import { registerAgentTools } from './tools/agent.ts';
 import { registerDiagnosticTools } from './tools/diagnose.ts';
+import { registerExternalTools } from './tools/external.ts';
 import { registerInspectionTools } from './tools/inspect.ts';
 import { registerInteractionTools } from './tools/interact.ts';
 import { registerSessionTools } from './tools/session.ts';
@@ -23,6 +24,11 @@ Diagnosing: browser_console (messages and uncaught errors), browser_network plus
 browser_request_detail (statuses, timings, bodies), browser_evaluate (page state), and
 browser_inspect_element (computed styles, box model).
 
+More tools: browser_list_tools shows what else can run against the page — tools the site publishes
+through WebMCP ("webmcp.*") and chrome-devtools-mcp's ("devtools.*": performance traces, Lighthouse,
+emulation). browser_tool_schema describes one,
+browser_call_tool runs it.
+
 For multi-step goals, run_task hands the session to a fast built-in agent that does the driving
 and reports back.`;
 
@@ -37,6 +43,7 @@ export function buildServer(sessions: SessionManager, config: Config): McpServer
   registerInteractionTools(server, context);
   registerInspectionTools(server, context);
   registerDiagnosticTools(server, context);
+  registerExternalTools(server, context);
   registerAgentTools(server, context);
 
   return server;

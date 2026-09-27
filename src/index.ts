@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { loadConfig } from './config.ts';
+import { loadConfig, parsePort } from './config.ts';
 import { startHttpServer } from './http.ts';
 import { buildServer } from './server.ts';
 import { SessionManager } from './session.ts';
@@ -20,6 +20,10 @@ Options:
   --headless            Run browsers headless (default).
   --no-headless         Run browsers headed.
   --idle-timeout <ms>   Close sessions unused for this long (default 1800000).
+  --cdp-url <url>       Attach to a running Chrome over CDP instead of launching
+                        one (e.g. http://127.0.0.1:9222).
+  --cdp-port <n>        Expose launched browsers' DevTools protocol on this
+                        local port (0 = any free port) for other CDP clients.
   --version, -v         Print version.
   --help, -h            Print this help.
 
@@ -30,6 +34,10 @@ Environment:
                         API key for the selected provider.
   WUT_USER_AGENT        Default User-Agent for new sessions (default AITester/1.0).
   WUT_EXECUTABLE_PATH   Explicit Chromium binary.
+  WUT_CDP_URL / WUT_CDP_PORT
+                        Same as --cdp-url / --cdp-port.
+  WUT_DEVTOOLS          Give sessions chrome-devtools-mcp's tools (default true;
+                        false keeps launched browsers without a DevTools port).
 
 See README.md for the full environment-variable table.
 `;
@@ -42,6 +50,8 @@ async function main(): Promise<void> {
       headless: { type: 'boolean' },
       'no-headless': { type: 'boolean' },
       'idle-timeout': { type: 'string' },
+      'cdp-url': { type: 'string' },
+      'cdp-port': { type: 'string' },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -63,6 +73,16 @@ async function main(): Promise<void> {
   if (values['idle-timeout']) {
     const parsed = Number(values['idle-timeout']);
     if (Number.isFinite(parsed) && parsed > 0) config.idleTimeoutMs = parsed;
+  }
+
+  if (values['cdp-url']) config.cdpUrl = values['cdp-url'];
+  if (values['cdp-port'] !== undefined) {
+    const parsed = parsePort(values['cdp-port']);
+    if (parsed === undefined) {
+      process.stderr.write(`Invalid --cdp-port "${values['cdp-port']}".\n`);
+      process.exit(2);
+    }
+    config.cdpPort = parsed;
   }
 
   const sessions = new SessionManager(config);

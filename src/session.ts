@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import type { Browser, BrowserContext, Dialog, Page, Request, Response, WebSocket } from 'playwright';
-import { launchBrowser } from './browser.ts';
+import type { BrowserContext, Dialog, Page, Request, Response, WebSocket } from 'playwright';
+import { connectBrowser, launchBrowser, type BrowserHandle } from './browser.ts';
+import { DevtoolsBridge } from './devtools.ts';
 import type { Config } from './config.ts';
 
 const CONSOLE_BUFFER_MAX = 500;
@@ -86,11 +87,27 @@ export interface PendingDialog {
 }
 
 export interface SessionOptions {
-  userAgent: string;
-  viewport: { width: number; height: number };
+  /** Undefined keeps the browser's own, which a shared profile must. */
+  userAgent?: string;
+  /** Undefined keeps the tab's own size, which a shared profile should. */
+  viewport?: { width: number; height: number };
   headless: boolean;
   baseUrl?: string;
   model?: string;
+  /** Attach to an already-running Chrome at this CDP endpoint instead of launching one. */
+  cdpUrl?: string;
+  /**
+   * With cdpUrl: drive the browser's own profile (its cookies, logins and tabs)
+   * rather than a fresh isolated context inside it.
+   */
+  useBrowserProfile?: boolean;
+  /** With useBrowserProfile: take over the existing tab whose URL contains this. */
+  tab?: string;
+  /**
+   * Launch into a browser with a private DevTools port, so chrome-devtools-mcp's
+   * tools can reach it through browser_call_tool.
+   */
+  devtools?: boolean;
 }
 
 const TEXTY_CONTENT_TYPE = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|.*\+json)/i;
@@ -131,19 +148,56 @@ export class Session {
   private readonly requestStarts = new WeakMap<Request, number>();
 
   readonly context: BrowserContext;
+  /**
+   * True when the context is a real browser profile shared with its user (and
+   * possibly other sessions): the session then only ever touches pages it
+   * opened or was pointed at, and never closes the context.
+   */
+  readonly shared: boolean;
+  /** DevTools protocol endpoint of the browser this session runs in, if reachable. */
+  readonly cdpEndpoint?: string;
+  /** Pages this session opened itself, and so may close when it ends. */
+  private readonly ownedPages = new Set<Page>();
+  private readonly onContextPage: (page: Page) => void;
   private activePage: Page;
 
-  constructor(id: string, options: SessionOptions, context: BrowserContext, activePage: Page) {
+  constructor(
+    id: string,
+    options: SessionOptions,
+    context: BrowserContext,
+    activePage: Page,
+    extra: { shared?: boolean; ownsPage?: boolean; cdpEndpoint?: string } = {},
+  ) {
     this.id = id;
     this.options = options;
     this.context = context;
+    this.shared = extra.shared ?? false;
+    this.cdpEndpoint = extra.cdpEndpoint;
     this.activePage = activePage;
+    if (extra.ownsPage ?? true) this.ownedPages.add(activePage);
     this.attach(activePage);
-    context.on('page', (page) => {
-      this.activePage = page;
-      this.attach(page);
-      this.pendingNotice = `A new page/popup opened and is now the active page: ${page.url()}`;
-    });
+    this.onContextPage = (page) => {
+      if (!this.shared) {
+        this.adopt(page);
+        return;
+      }
+      // In a shared profile every tab the user opens lands here too; only a
+      // popup one of this session's own pages opened belongs to the session.
+      void page
+        .opener()
+        .then((opener) => {
+          if (opener && this.attached.has(opener)) this.adopt(page);
+        })
+        .catch(() => {});
+    };
+    context.on('page', this.onContextPage);
+  }
+
+  private adopt(page: Page): void {
+    this.activePage = page;
+    this.ownedPages.add(page);
+    this.attach(page);
+    this.pendingNotice = `A new page/popup opened and is now the active page: ${page.url()}`;
   }
 
   get page(): Page {
@@ -160,7 +214,9 @@ export class Session {
     const current = this.activePage;
     if (current && !current.isClosed()) return current;
     // A popup dismissed itself, or script closed the page.
-    const alive = this.context.pages().find((page) => !page.isClosed());
+    const alive = this.context
+      .pages()
+      .find((page) => !page.isClosed() && (!this.shared || this.attached.has(page)));
     if (alive && alive !== current) {
       this.activePage = alive;
       this.pendingNotice = `The previous page closed; now active: ${alive.url()}`;
@@ -173,7 +229,9 @@ export class Session {
     const alive = this.livePage();
     if (alive) return alive;
     const page = await this.context.newPage();
+    if (this.shared && this.options.viewport) await page.setViewportSize(this.options.viewport);
     this.activePage = page;
+    this.ownedPages.add(page);
     this.attach(page);
     this.pendingNotice = undefined;
     return page;
@@ -472,14 +530,26 @@ export class Session {
       await this.pendingDialog.dialog.dismiss().catch(() => {});
       this.pendingDialog = undefined;
     }
-    await this.context.close().catch(() => {});
+    this.context.off('page', this.onContextPage);
+    if (!this.shared) {
+      await this.context.close().catch(() => {});
+      return;
+    }
+    // The profile belongs to the user: close only the tabs this session opened,
+    // and leave a tab it was pointed at open.
+    await Promise.all([...this.ownedPages].map((page) => page.close().catch(() => {})));
   }
 }
 
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
-  /** One browser per headless mode; contexts give sessions their isolation. */
-  private readonly browsers = new Map<boolean, Promise<Browser>>();
+  /**
+   * One launched browser per headless mode, plus one connection per CDP
+   * endpoint; contexts give sessions their isolation.
+   */
+  private readonly browsers = new Map<string, Promise<BrowserHandle>>();
+  /** One chrome-devtools-mcp child per browser endpoint, started on first use. */
+  private readonly bridges = new Map<string, DevtoolsBridge>();
   private reaper?: NodeJS.Timeout;
 
   private readonly config: Config;
@@ -488,35 +558,85 @@ export class SessionManager {
     this.config = config;
   }
 
-  private browser(headless: boolean): Promise<Browser> {
-    const existing = this.browsers.get(headless);
+  private browser(options: SessionOptions): Promise<BrowserHandle> {
+    // A browser launched with a DevTools port is kept apart from one without,
+    // so asking for devtools never opens a port on everyone else's browser.
+    const exposed = this.config.cdpPort !== undefined || Boolean(options.devtools);
+    const key = options.cdpUrl
+      ? `cdp ${options.cdpUrl}`
+      : `launch ${options.headless}${exposed ? ' exposed' : ''}`;
+    const existing = this.browsers.get(key);
     if (existing) return existing;
 
-    const pending = launchBrowser(headless, this.config.executablePath);
-    this.browsers.set(headless, pending);
+    let pending: Promise<BrowserHandle>;
+    if (options.cdpUrl) {
+      pending = connectBrowser(options.cdpUrl);
+    } else {
+      // Headed and headless browsers cannot share one port; the second launched
+      // gets a free one, and browser_start reports whichever it got.
+      const taken = [...this.browsers.keys()].some((other) => other.endsWith(' exposed'));
+      pending = launchBrowser({
+        headless: options.headless,
+        executablePath: this.config.executablePath,
+        cdpPort: !exposed
+          ? undefined
+          : this.config.cdpPort === undefined || taken
+            ? 0
+            : this.config.cdpPort,
+      });
+    }
+    this.browsers.set(key, pending);
     // Neither a failed launch nor a later crash may poison the slot: without
     // this, one Chromium crash breaks every subsequent browser_start.
     const forget = () => {
-      if (this.browsers.get(headless) === pending) this.browsers.delete(headless);
+      if (this.browsers.get(key) === pending) this.browsers.delete(key);
     };
     pending.then(
-      (browser) => browser.on('disconnected', forget),
+      ({ browser }) => browser.on('disconnected', forget),
       forget,
     );
     return pending;
   }
 
   async create(options: SessionOptions): Promise<Session> {
-    const browser = await this.browser(options.headless);
-    const context = await browser.newContext({
-      userAgent: options.userAgent,
-      viewport: options.viewport,
-      baseURL: options.baseUrl,
-    });
-    context.setDefaultTimeout(this.config.actionTimeoutMs);
-    const page = await context.newPage();
+    const { browser, cdpEndpoint } = await this.browser(options);
     const id = `s${randomBytes(4).toString('hex')}`;
-    const session = new Session(id, options, context, page);
+    let session: Session;
+
+    if (options.cdpUrl && options.useBrowserProfile) {
+      // A browser attached over CDP exposes its real profile as the first context.
+      const context = browser.contexts()[0];
+      if (!context) throw new Error(`The browser at ${options.cdpUrl} has no default profile to use.`);
+      context.setDefaultTimeout(this.config.actionTimeoutMs);
+      let page: Page;
+      let ownsPage = false;
+      if (options.tab) {
+        const needle = options.tab;
+        const match = context.pages().find((candidate) => candidate.url().includes(needle));
+        if (!match) {
+          const open = context.pages().map((candidate) => `  ${candidate.url()}`);
+          throw new Error(
+            `No open tab's URL contains "${needle}".` +
+              (open.length ? ` Open tabs:\n${open.join('\n')}` : ' The browser has no open tabs.'),
+          );
+        }
+        page = match;
+      } else {
+        page = await context.newPage();
+        ownsPage = true;
+      }
+      if (options.viewport) await page.setViewportSize(options.viewport);
+      session = new Session(id, options, context, page, { shared: true, ownsPage, cdpEndpoint });
+    } else {
+      const context = await browser.newContext({
+        userAgent: options.userAgent,
+        viewport: options.viewport,
+        baseURL: options.baseUrl,
+      });
+      context.setDefaultTimeout(this.config.actionTimeoutMs);
+      const page = await context.newPage();
+      session = new Session(id, options, context, page, { cdpEndpoint });
+    }
     // Must expire before an action times out; the action that opened the dialog
     // stays blocked until the dialog is answered.
     // Strictly below the action timeout: the action that opened the dialog is
@@ -525,6 +645,18 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.startReaper();
     return session;
+  }
+
+  /** The chrome-devtools-mcp bridge for a session's browser, if it has an endpoint. */
+  bridge(session: Session): DevtoolsBridge | undefined {
+    const endpoint = session.cdpEndpoint;
+    if (!endpoint) return undefined;
+    let bridge = this.bridges.get(endpoint);
+    if (!bridge) {
+      bridge = new DevtoolsBridge(endpoint, this.config.devtoolsCommand);
+      this.bridges.set(endpoint, bridge);
+    }
+    return bridge;
   }
 
   get(id: string): Session {
@@ -571,9 +703,13 @@ export class SessionManager {
     if (this.reaper) clearInterval(this.reaper);
     this.reaper = undefined;
     await Promise.all(this.list().map((session) => session.close()));
+    await Promise.all([...this.bridges.values()].map((bridge) => bridge.close()));
+    this.bridges.clear();
     this.sessions.clear();
     for (const pending of this.browsers.values()) {
-      await pending.then((browser) => browser.close()).catch(() => {});
+      // For a browser attached over CDP this only disconnects (and drops the
+      // contexts this server created); the user's Chrome keeps running.
+      await pending.then(({ browser }) => browser.close()).catch(() => {});
     }
     this.browsers.clear();
   }

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><title>WebMCP shop</title></head>
+<body>
+  <h1>WebMCP shop</h1>
+  <p id="cart">Cart: 0</p>
+  <!-- Declarative: the form itself is the tool. -->
+  <form toolname="search_catalogue" tooldescription="Search the catalogue by keyword">
+    <input name="q" required>
+  </form>
+  <script>
+    // Chrome has moved this between navigator and document while WebMCP is experimental.
+    const modelContext = document.modelContext ?? navigator.modelContext;
+    let cart = 0;
+    modelContext?.registerTool({
+      name: 'add_to_cart',
+      description: 'Adds items to the cart and returns the new count',
+      inputSchema: {
+        type: 'object',
+        properties: { quantity: { type: 'number' } },
+        required: ['quantity'],
+      },
+      annotations: { consequentialHint: true },
+      async execute({ quantity }) {
+        cart += quantity;
+        document.getElementById('cart').textContent = `Cart: ${cart}`;
+        return { content: [{ type: 'text', text: `cart now holds ${cart}` }] };
+      },
+    });
+    modelContext?.registerTool({
+      name: 'broken',
+      description: 'Always throws',
+      inputSchema: { type: 'object', properties: {} },
+      execute() {
+        throw new Error('out of stock');
+      },
+    });
+  </script>
+</body>
+</html>
